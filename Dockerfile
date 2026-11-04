@@ -1,5 +1,5 @@
-# Build from the repository root:  docker build -f deploy/Dockerfile -t uzex-bot .
-# data/uzex.db is NOT baked in: mount ./data as a volume (see docker-compose.yml).
+# Build from the repository root:  docker build -t uzex-bot .
+# data/uzex.db is built inside the image from data/raw (if present) — or mount ./data as a volume.
 FROM python:3.12-slim
 
 ENV PYTHONIOENCODING=utf-8 \
@@ -13,10 +13,11 @@ COPY requirements.txt .
 RUN pip install -r requirements.txt
 
 COPY app ./app
-COPY bot.py cli.py ./
 COPY scripts ./scripts
+COPY bot.py cli.py web.py ./
+COPY web ./web
 
-# data/ (uzex.db, read-only) and logs/ (qa.jsonl, bot.log) are volumes
+# data/ (uzex.db, read-only) and logs/ (qa.jsonl) are volumes mounted by docker-compose
 RUN mkdir -p /app/data /app/logs
 VOLUME ["/app/data", "/app/logs"]
 

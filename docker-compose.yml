@@ -1,0 +1,34 @@
+# Run from the repository root:  docker compose up -d --build
+# Requires: .env (from .env.example) and data/uzex.db (build it once: see README "Build the database").
+services:
+  uzex-bot:
+    build: .
+    image: uzex-bot
+    container_name: uzex-bot
+    env_file:
+      - .env
+    environment:
+      PYTHONIOENCODING: utf-8
+      DB_PATH: data/uzex.db
+      QA_LOG: logs/qa.jsonl
+    volumes:
+      - ./data:/app/data:ro
+      - ./logs:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  # One-off helper: builds data/uzex.db from data/raw/uzex_spot_data/*.csv
+  #   docker compose run --rm build-db
+  build-db:
+    build: .
+    image: uzex-bot
+    profiles: ["tools"]
+    env_file:
+      - .env
+    volumes:
+      - ./data:/app/data
+    command: ["python", "-X", "utf8", "scripts/build_db.py"]

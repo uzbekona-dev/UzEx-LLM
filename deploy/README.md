@@ -83,9 +83,9 @@ The unit has `Restart=always`, `RestartSec=5`, `EnvironmentFile=/opt/uzex-bot/.e
 ```bash
 cd <repo root>
 cp .env.example .env && nano .env
-python -X utf8 scripts/build_db.py                   # DB is built on the host, mounted read-only
-docker compose -f deploy/docker-compose.yml up -d --build
-docker compose -f deploy/docker-compose.yml logs -f
+docker compose run --rm build-db                     # builds data/uzex.db from data/raw (once)
+docker compose up -d --build
+docker compose logs -f
 ```
 
 The image (`python:3.12-slim`) contains `app/`, `bot.py`, `cli.py`, `scripts/`; `./data` is mounted at
