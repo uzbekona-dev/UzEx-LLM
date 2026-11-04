@@ -6,6 +6,7 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
+from collections import deque
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -17,7 +18,8 @@ from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMark
 from aiogram.utils.chat_action import ChatActionSender
 from dotenv import load_dotenv
 
-from app.agent import Agent
+from app.agent import Agent, record_qa
+from app.entities import EntityResolver
 from app.format import EVIDENCE_OPEN, render
 from app.llm import Llm
 from app.sql_guard import open_db
@@ -29,15 +31,28 @@ log = logging.getLogger("bot")
 TELEGRAM_MESSAGE_LIMIT = 4096
 
 WELCOME = (
-    "👋 <b>UZEX birja bitimlari bo'yicha yordamchi</b>\n"
-    "Ma'lumotlar: 03.01.2022 — 30.10.2026, 500 000 bitim, 40 tovar, 14 hudud.\n"
-    "Savolni o'zbek yoki rus tilida oddiy so'z bilan yozing — javob faqat ma'lumotlar asosida, "
-    "har bir javob ostida u qanday topilgani ko'rsatiladi. Ma'lumotda javob bo'lmasa, shuni aytaman.\n\n"
-    "👋 <b>Ассистент по биржевым сделкам UZEX</b>\n"
-    "Данные: 03.01.2022 — 30.10.2026, 500 000 сделок, 40 товаров, 14 регионов.\n"
-    "Задайте вопрос на узбекском или русском. Отвечаю только по данным и показываю, "
-    "как получен ответ. Если ответа в данных нет — скажу об этом.\n\n"
-    "⬇️ Misol savollar / Примеры — на кнопках ниже."
+    "🤖 <b>UZEX birja bitimlari bo'yicha AI-yordamchi</b>\n"
+    "Ma'lumotlar: 03.01.2022 – 30.10.2026, 500 000 bitim.\n\n"
+    "<b>Nima qila olaman</b>\n"
+    "• Bitim raqami bo'yicha: kim sotgan, kim olgan, narx, hajm, status\n"
+    "• Tovar bo'yicha hajm, summa, o'rtacha narx — yil / oy / hudud kesimida\n"
+    "• Kompaniya (nomi yoki STIR) va brokerlar statistikasi\n"
+    "• Dollar kursi, bekor qilingan va kechikkan bitimlar\n\n"
+    "<b>Qanday sinash</b>\n"
+    "1. Pastdagi tugmani bosing yoki savolni o'zingiz yozing (uz / ru)\n"
+    "2. 5–30 soniya kuting — javob ostida ✅ asos va ▸ SQL ko'rinadi\n"
+    "3. Ma'lumotda yo'q narsani so'rab ko'ring — «javob yo'q» deyman, o'ylab topmayman\n\n"
+    "🤖 <b>AI-ассистент по биржевым сделкам UZEX</b>\n"
+    "Данные: 03.01.2022 – 30.10.2026, 500 000 сделок.\n\n"
+    "<b>Что умею</b>\n"
+    "• По номеру сделки: продавец, покупатель, цена, объём, статус\n"
+    "• По товару: объём, сумма, средняя цена — по годам / месяцам / регионам\n"
+    "• Статистика по компании (название или ИНН) и брокерам\n"
+    "• Курс доллара, аннулированные и просроченные сделки\n\n"
+    "<b>Как проверить</b>\n"
+    "1. Нажмите кнопку ниже или напишите свой вопрос (uz / ru)\n"
+    "2. Подождите 5–30 секунд — под ответом будут ✅ основание и ▸ SQL\n"
+    "3. Спросите то, чего нет в данных — скажу «ответа нет», ничего не придумаю"
 )
 HELP = (
     "<b>Nima so'rash mumkin / Что можно спросить</b>\n"
@@ -51,13 +66,14 @@ HELP = (
     "Под каждым ответом: ✅ число строк, 🔎 как понят вопрос, ▸ SQL-запрос (раскрывается по нажатию)."
 )
 EXAMPLES = [
-    "2024-yilda qancha tonna paxta xomashyosi sotilgan?",
-    "Кто покупатель и продавец по сделке 100001?",
-    "2025-yilda eng ko'p bitim qilgan 5 ta broker",
-    "Какая средняя цена портландцемента за тонну в марте 2023 года?",
-    "15.06.2024 kuni dollar kursi qancha edi?",
-    "Сколько сделок у компании Qojo Invest?",
+    "2024-yilda qancha paxta sotilgan?",
+    "Кто покупатель по сделке 100001?",
+    "2025-yil top-5 broker",
+    "Цена цемента в марте 2023",
+    "15.06.2024 dollar kursi",
+    "Сделки компании Qojo Invest",
 ]
+KEYBOARD_COLUMNS = 2
 PROGRESS = "⏳ Ma'lumotlarni qidiryapman… / Ищу в данных… (5–30 s)"
 ERROR_MSG = (
     "⚠️ Texnik xatolik yuz berdi, iltimos bir ozdan keyin qayta urinib ko'ring.\n"
@@ -73,7 +89,8 @@ router = Router(name="main")
 
 
 def examples_keyboard() -> ReplyKeyboardMarkup:
-    rows = [[KeyboardButton(text=q)] for q in EXAMPLES]
+    buttons = [KeyboardButton(text=q) for q in EXAMPLES]
+    rows = [buttons[i:i + KEYBOARD_COLUMNS] for i in range(0, len(buttons), KEYBOARD_COLUMNS)]
     return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, input_field_placeholder="Savol / Вопрос…")
 
 
@@ -102,6 +119,23 @@ def _split_plain(text: str, limit: int) -> list[str]:
     return chunks + ([rest] if rest else [])
 
 
+class ChatHistory:
+    """Last few (question, interpretation) pairs per chat so follow-ups like "va 2023-da?" resolve."""
+
+    def __init__(self, turns: int = 2) -> None:
+        self._turns = turns
+        self._by_chat: dict[int, deque[tuple[str, str]]] = {}
+
+    def get(self, chat_id: int) -> list[tuple[str, str]]:
+        return list(self._by_chat.get(chat_id, ()))
+
+    def add(self, chat_id: int, question: str, interpretation: str) -> None:
+        self._by_chat.setdefault(chat_id, deque(maxlen=self._turns)).append((question, interpretation))
+
+    def clear(self, chat_id: int) -> None:
+        self._by_chat.pop(chat_id, None)
+
+
 class ChatLocks:
     """One asyncio.Lock per chat: a chat's questions run sequentially, chats run in parallel."""
 
@@ -126,7 +160,8 @@ class ChatLocks:
 
 
 @router.message(Command("start"))
-async def on_start(message: Message) -> None:
+async def on_start(message: Message, chat_history: ChatHistory) -> None:
+    chat_history.clear(message.chat.id)
     await message.answer(WELCOME, reply_markup=examples_keyboard())
 
 
@@ -142,7 +177,7 @@ async def on_examples(message: Message) -> None:
 
 
 @router.message(F.text)
-async def on_question(message: Message, agent: Agent, chat_locks: ChatLocks) -> None:
+async def on_question(message: Message, agent: Agent, chat_locks: ChatLocks, chat_history: ChatHistory) -> None:
     question = (message.text or "").strip()
     if not question:
         return
@@ -150,14 +185,18 @@ async def on_question(message: Message, agent: Agent, chat_locks: ChatLocks) -> 
         chat_locks.hold(message.chat.id),
         ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id),
     ):
-        await _answer(message, agent, question)
+        await _answer(message, agent, chat_history, question)
 
 
-async def _answer(message: Message, agent: Agent, question: str) -> None:
+async def _answer(message: Message, agent: Agent, chat_history: ChatHistory, question: str) -> None:
     progress = await message.answer(PROGRESS, parse_mode=None)
+    chat_id = message.chat.id
     try:
-        ans = await asyncio.to_thread(agent.ask, question)
+        ans = await asyncio.to_thread(agent.ask, question, chat_history.get(chat_id))
         log.info("Q=%r | sql=%r | rows=%d | %.1fs", question, ans.sql, len(ans.rows), ans.elapsed_sec)
+        record_qa(ans, {"chat_id": chat_id, "user": message.from_user.id if message.from_user else None})
+        if ans.answerable and not ans.timed_out:
+            chat_history.add(chat_id, question, ans.interpretation)
         parts = split_message(render(ans))
         await _edit_or_resend(progress, parts[0])
         for part in parts[1:]:
@@ -177,11 +216,16 @@ async def _edit_or_resend(progress: Message, text: str, parse_mode: str | None =
 
 
 def build_agent() -> Agent:
-    return Agent(open_db(os.environ.get("DB_PATH", "data/uzex.db")), Llm())
+    db_path = os.environ.get("DB_PATH", "data/uzex.db")
+    return Agent(None, Llm(), db_path=db_path, resolver=build_resolver(db_path))
+
+
+def build_resolver(db_path: str) -> EntityResolver:
+    return EntityResolver(open_db(db_path))
 
 
 def build_dispatcher(agent: Agent) -> Dispatcher:
-    dp = Dispatcher(agent=agent, chat_locks=ChatLocks())
+    dp = Dispatcher(agent=agent, chat_locks=ChatLocks(), chat_history=ChatHistory())
     dp.include_router(router)
     return dp
 

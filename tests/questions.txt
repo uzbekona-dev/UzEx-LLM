@@ -25,3 +25,28 @@ BK045 brokeri jami nechta bitimda qatnashgan?
 Noyabr 2026 da qancha un sotilgan?
 Eng yirik bitim qaysi?
 Yetkazib berish muddati kechikkan bitimlar soni qancha?
+# Golden set additions (tests/golden.jsonl, ids g15-g40)
+Сколько контрактов с базисом поставки EXW?
+Birorta ham bitim tuzilmagan shartnomalar nechta?
+Сколько контрактов со складом в Наманганской области?
+Fyuchers shaklidagi shartnomalar nechta?
+Сколько экспортных контрактов зарегистрировано?
+100118-shartnoma bo'yicha to'lov muddati va yetkazib berish muddati necha kun?
+Какая базовая цена в контракте 100002 и что это за товар?
+Eng ko'p shartnoma ro'yxatdan o'tkazgan sotuvchi qaysi?
+DAP yetkazib berish bazisidagi shartnomalar soni qancha?
+Сколько сделок по хлопку-сырцу 1 сорта 1 класса?
+2023-yilda 2-nav paxta xomashyosi qancha sotilgan?
+2025-yilda oliy nav bug'doy uni qancha sotilgan?
+4-klass bug'doy bo'yicha jami nechta bitim bor?
+2024-yilda eksport bitimlari summasi dollarda va so'mda qancha?
+Какой курс доллара был 01.03.2025?
+2022-yilda nechta eksport bitimi tuzilgan?
+Eng katta eksport bitimi qaysi va summasi dollarda qancha?
+Сколько сделок у брокера BK001 в 2024 году?
+Qaysi broker jami eng ko'p bitimda qatnashgan?
+Какой брокер был брокером продавца в наибольшем числе сделок?
+Кто директор компании с ИНН 953758401 и какой у неё телефон?
+100437-bitim bo'yicha xaridor kim?
+Сколько золота продано на бирже в 2024 году?
+2027-yilda paxta narxi qancha bo'ladi?

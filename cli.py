@@ -9,8 +9,9 @@ import sys
 from dotenv import load_dotenv
 
 from app.agent import Agent
-from app.llm import Llm
+from app.entities import EntityResolver
 from app.sql_guard import open_db
+from app.llm import Llm
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
@@ -21,7 +22,8 @@ def main() -> None:
     if not question:
         print('usage: python cli.py "<question>"')
         sys.exit(1)
-    agent = Agent(open_db(os.environ.get("DB_PATH", "data/uzex.db")), Llm())
+    db_path = os.environ.get("DB_PATH", "data/uzex.db")
+    agent = Agent(None, Llm(), db_path=db_path, resolver=EntityResolver(open_db(db_path)))
     ans = agent.ask(question)
     print("\n=== ANSWER ===\n" + ans.answer)
     print("\n=== INTERPRETATION ===\n" + ans.interpretation)

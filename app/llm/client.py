@@ -31,6 +31,10 @@ PROVIDER_FACTORIES: dict[str, ProviderFactory] = {
 }
 
 
+class LlmDeadline(RuntimeError):
+    """Raised when the caller's time budget ran out before an attempt could start."""
+
+
 class ChainEntry(NamedTuple):
     provider: str
     model: str
@@ -92,11 +96,22 @@ class Llm:
             self._providers[name] = PROVIDER_FACTORIES[name](env[KEY_ENV[name]], env)
         return True
 
-    def complete(self, system: str, user: str, *, temperature: float = 0.0, json_mode: bool = False) -> LlmResponse:
+    def complete(
+        self,
+        system: str,
+        user: str,
+        *,
+        temperature: float = 0.0,
+        json_mode: bool = False,
+        deadline: float | None = None,
+    ) -> LlmResponse:
+        """`deadline` is a time.monotonic() value: no new attempt is started after it."""
         last_error: Exception | None = None
         for entry in self._entries:
             provider = self._providers[entry.provider]
             for attempt in range(1, RETRIES_PER_MODEL + 1):
+                if deadline is not None and time.monotonic() > deadline:
+                    raise LlmDeadline(f"LLM budget exhausted before {entry} attempt {attempt}: {last_error}")
                 try:
                     resp = provider.complete(
                         entry.model, system, user, temperature=temperature, json_mode=json_mode

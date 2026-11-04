@@ -1,0 +1,24 @@
+# Run from the repository root:  docker compose -f deploy/docker-compose.yml up -d --build
+# Requires: .env (from .env.example) and data/uzex.db (python -X utf8 scripts/build_db.py) in the repo root.
+services:
+  uzex-bot:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: uzex-bot
+    container_name: uzex-bot
+    env_file:
+      - ../.env
+    environment:
+      PYTHONIOENCODING: utf-8
+      DB_PATH: data/uzex.db
+      QA_LOG: logs/qa.jsonl
+    volumes:
+      - ../data:/app/data:ro
+      - ../logs:/app/logs
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"

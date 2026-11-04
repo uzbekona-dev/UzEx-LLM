@@ -1,29 +1,45 @@
-"""Question -> SQL -> verified answer. The LLM never computes numbers; SQLite does."""
+"""Question -> SQL -> verified answer. The LLM never computes numbers; SQLite does.
+
+Safety nets, in order:
+  entity resolution in code (candidates only) -> SQL guard (read-only, timeout) ->
+  grounding verification of numbers/names/codes/dates -> template fallback ->
+  overall time budget so one answer never exceeds the 90 s limit.
+"""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 import re
 import sqlite3
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Protocol
 
-from app.llm import Llm
+from app.llm import Llm, LlmDeadline
 from app.schema_prompt import RULES, SCHEMA_DOC
-from app.sql_guard import QueryResult, run_query
+from app.sql_guard import QueryResult, open_db, run_query
 from app.verify import verify_answer
 
 log = logging.getLogger(__name__)
 
 MAX_SQL_ATTEMPTS = 3
+MAX_ANSWER_ATTEMPTS = 2
+START_BUDGET_SEC = float(os.environ.get("ANSWER_BUDGET_SEC", "45"))  # no new LLM call after this (+40 s call timeout < 90 s)
+HISTORY_TURNS = 2
+QA_LOG_PATH = os.environ.get("QA_LOG", "logs/qa.jsonl")
 
 PLAN_SYSTEM = f"""You translate questions about exchange deals (Russian or Uzbek) into SQLite SQL.
 {SCHEMA_DOC}
 {RULES}
+If RESOLVED ENTITIES are given, use exactly those codes / INNs; if the entity the user named is not among
+them, set answerable=false and say which name was not found. If PREVIOUS TURNS are given, treat a short
+follow-up ("and in 2023?", "va xaridlari-chi?") as the previous question with that change applied.
 Respond ONLY with JSON:
 {{"language": "ru" | "uz", "answerable": true|false, "reason": "<why not, if false>",
-  "interpretation": "<one short sentence IN THE LANGUAGE OF THE QUESTION (uz = Latin script), for the end user: how you understood it, incl. assumptions (period, product, cancelled excluded...). No column names.>",
+  "interpretation": "<one short sentence IN THE LANGUAGE OF THE QUESTION (uz = Latin script), for the end user: how you understood it, incl. assumptions (period, product, cancelled excluded, formula used e.g. volume = quantity x lot). No column names.>",
   "sql": "<single SELECT>" }}
 """
 
@@ -42,6 +58,10 @@ STRICT RULES:
 - Start directly with the answer; no greetings, no "according to the data"."""
 
 
+class Resolver(Protocol):
+    def resolve(self, question: str) -> object: ...  # object has .prompt_block() -> str
+
+
 @dataclass(frozen=True)
 class AgentAnswer:
     question: str
@@ -55,6 +75,10 @@ class AgentAnswer:
     verified: bool
     elapsed_sec: float
     debug: list[str] = field(default_factory=list)
+    timed_out: bool = False
+
+
+Turn = tuple[str, str]  # (question, interpretation)
 
 
 def _parse_json(text: str) -> dict:
@@ -68,6 +92,12 @@ def _no_data_message(lang: str, reason: str) -> str:
     return f"В данных нет ответа на этот вопрос. {reason}".strip()
 
 
+def _timeout_message(lang: str) -> str:
+    if lang == "uz":
+        return "Kechirasiz, javobni vaqtida tayyorlay olmadim (model javob bermadi). Iltimos, savolni qayta yuboring."
+    return "Извините, не успел подготовить ответ (модель не ответила вовремя). Пожалуйста, отправьте вопрос ещё раз."
+
+
 def _fallback_answer(lang: str, result: QueryResult) -> str:
     """Template answer used when the LLM prose fails verification twice."""
     if not result.rows:
@@ -79,34 +109,84 @@ def _fallback_answer(lang: str, result: QueryResult) -> str:
     return "\n".join(lines)
 
 
-class Agent:
-    def __init__(self, con: sqlite3.Connection, llm: Llm) -> None:
-        self.con = con
-        self.llm = llm
+def _guess_language(question: str) -> str:
+    return "ru" if re.search(r"[а-яё]", question, re.I) and not re.search(r"[qoʻ'‘ʼ]", question) else "uz"
 
-    def _plan(self, question: str, feedback: str | None) -> dict:
-        user = f"QUESTION: {question}"
+
+def record_qa(ans: AgentAnswer, extra: dict | None = None, path: str = QA_LOG_PATH) -> None:
+    """Append one JSON line per answered question (for later analysis); never raises."""
+    if not path:
+        return
+    entry = {
+        "ts": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "question": ans.question, "language": ans.language, "answerable": ans.answerable,
+        "verified": ans.verified, "timed_out": ans.timed_out, "rows": len(ans.rows),
+        "elapsed_sec": round(ans.elapsed_sec, 1), "sql": ans.sql, "interpretation": ans.interpretation,
+        "answer": ans.answer, **(extra or {}),
+    }
+    try:
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+    except OSError:
+        log.exception("could not write QA log")
+
+
+class Agent:
+    """One instance per process; `ask` is thread-safe (fresh DB connection per call)."""
+
+    def __init__(
+        self,
+        con: sqlite3.Connection | None,
+        llm: Llm,
+        *,
+        db_path: str | None = None,
+        resolver: Resolver | None = None,
+    ) -> None:
+        if con is None and db_path is None:
+            raise ValueError("Agent needs a connection or db_path")
+        self.con = con
+        self.db_path = db_path
+        self.llm = llm
+        self.resolver = resolver
+
+    # -- plumbing -----------------------------------------------------------------------------
+    def _connection(self) -> tuple[sqlite3.Connection, bool]:
+        if self.db_path:
+            return open_db(self.db_path), True
+        assert self.con is not None
+        return self.con, False
+
+    def _plan(self, question: str, feedback: str | None, entities: str, history: list[Turn], deadline: float) -> dict:
+        user = ""
+        if history:
+            user += "PREVIOUS TURNS:\n" + "\n".join(f"Q: {q}\nInterpretation: {i}" for q, i in history) + "\n\n"
+        if entities:
+            user += entities + "\n\n"
+        user += f"QUESTION: {question}"
         if feedback:
             user += f"\n\nPREVIOUS ATTEMPT FAILED: {feedback}\nFix the SQL."
-        resp = self.llm.complete(PLAN_SYSTEM, user, json_mode=True)
+        resp = self.llm.complete(PLAN_SYSTEM, user, json_mode=True, deadline=deadline)
         return _parse_json(resp.text)
 
-    def _query_with_retries(self, question: str, debug: list[str]) -> tuple[dict, QueryResult | None]:
+    def _query_with_retries(
+        self, con: sqlite3.Connection, question: str, entities: str, history: list[Turn], deadline: float, debug: list[str]
+    ) -> tuple[dict, QueryResult | None]:
         feedback = None
         plan: dict = {}
         for attempt in range(1, MAX_SQL_ATTEMPTS + 1):
-            plan = self._plan(question, feedback)
+            plan = self._plan(question, feedback, entities, history, deadline)
             debug.append(f"plan#{attempt}: {json.dumps(plan, ensure_ascii=False)[:800]}")
             if not plan.get("answerable", False) or not plan.get("sql"):
                 return plan, None
-            result = run_query(self.con, plan["sql"])
+            result = run_query(con, plan["sql"])
             if result.ok:
                 return plan, result
             feedback = f"SQL error: {result.error}"
             debug.append(feedback)
         return plan, QueryResult(sql=plan.get("sql", ""), columns=[], rows=[], elapsed_sec=0, error="gave up")
 
-    def _write_answer(self, question: str, plan: dict, result: QueryResult, note: str | None) -> str:
+    def _write_answer(self, question: str, plan: dict, result: QueryResult, note: str | None, deadline: float) -> str:
         payload = {
             "question": question, "language": plan.get("language", "ru"),
             "interpretation": plan.get("interpretation", ""), "sql": result.sql,
@@ -116,38 +196,67 @@ class Agent:
         user = json.dumps(payload, ensure_ascii=False, default=str)
         if note:
             user += f"\n\nIMPORTANT: {note}"
-        return self.llm.complete(ANSWER_SYSTEM, user).text.strip()
+        return self.llm.complete(ANSWER_SYSTEM, user, deadline=deadline).text.strip()
 
-    def ask(self, question: str) -> AgentAnswer:
+    def _resolve(self, question: str, debug: list[str]) -> str:
+        if self.resolver is None:
+            return ""
+        try:
+            block = self.resolver.resolve(question).prompt_block()  # type: ignore[attr-defined]
+        except Exception:  # noqa: BLE001 - resolution is a helper, never a blocker
+            log.exception("entity resolution failed")
+            return ""
+        if block:
+            debug.append(block)
+        return block
+
+    # -- main entry ---------------------------------------------------------------------------
+    def ask(self, question: str, history: list[Turn] | None = None) -> AgentAnswer:
         started = time.monotonic()
+        deadline = started + START_BUDGET_SEC
         debug: list[str] = []
-        plan, result = self._query_with_retries(question, debug)
+        con, owned = self._connection()
+        try:
+            return self._ask(con, question, list(history or [])[-HISTORY_TURNS:], started, deadline, debug)
+        except LlmDeadline as exc:
+            debug.append(str(exc))
+            lang = _guess_language(question)
+            return AgentAnswer(question, lang, _timeout_message(lang), "", None, [], [], True, False,
+                               time.monotonic() - started, debug, timed_out=True)
+        finally:
+            if owned:
+                con.close()
+
+    def _ask(self, con: sqlite3.Connection, question: str, history: list[Turn], started: float, deadline: float,
+             debug: list[str]) -> AgentAnswer:
+        entities = self._resolve(question, debug)
+        plan, result = self._query_with_retries(con, question, entities, history, deadline, debug)
         lang = plan.get("language", "ru")
+        interpretation = plan.get("interpretation", "")
         if result is None:
             return AgentAnswer(question, lang, _no_data_message(lang, plan.get("reason", "")),
-                               plan.get("interpretation", ""), None, [], [], False, True,
-                               time.monotonic() - started, debug)
+                               interpretation, None, [], [], False, True, time.monotonic() - started, debug)
         if not result.ok:
             msg = ("So'rovni tuza olmadim, iltimos savolni boshqacha ifodalang." if lang == "uz"
                    else "Не удалось построить запрос, пожалуйста, переформулируйте вопрос.")
-            return AgentAnswer(question, lang, msg, plan.get("interpretation", ""), result.sql, [], [],
+            return AgentAnswer(question, lang, msg, interpretation, result.sql, [], [],
                                True, False, time.monotonic() - started, debug)
 
         note = None
         verified = False
         answer = ""
-        for _ in range(2):
-            answer = self._write_answer(question, plan, result, note)
-            context = f"{question}\n{plan.get('interpretation', '')}\n{result.sql}"
+        context = f"{question}\n{result.sql}"
+        for _ in range(MAX_ANSWER_ATTEMPTS):
+            answer = self._write_answer(question, plan, result, note, deadline)
             check = verify_answer(answer, result.rows, context)
-            debug.append(f"verify: ok={check.ok} unsupported={check.unsupported[:5]}")
+            debug.append(f"verify: ok={check.ok} unsupported={check.problems[:5]}")
             if check.ok:
                 verified = True
                 break
-            note = (f"Your previous answer contained numbers not present in the rows: {check.unsupported[:5]}. "
-                    "Rewrite using only values from the rows, copied exactly.")
+            note = (f"Your previous answer contained values not present in the rows: {check.problems[:5]}. "
+                    "Rewrite using only values from the rows, copied exactly (names, codes, dates, numbers).")
         if not verified:
             answer = _fallback_answer(lang, result)
             verified = True
-        return AgentAnswer(question, lang, answer, plan.get("interpretation", ""), result.sql, result.rows,
+        return AgentAnswer(question, lang, answer, interpretation, result.sql, result.rows,
                            result.columns, True, verified, time.monotonic() - started, debug)

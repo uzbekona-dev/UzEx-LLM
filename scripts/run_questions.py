@@ -14,14 +14,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv  # noqa: E402
 
 from app.agent import Agent  # noqa: E402
-from app.llm import Llm  # noqa: E402
+from app.entities import EntityResolver  # noqa: E402
 from app.sql_guard import open_db  # noqa: E402
+from app.llm import Llm  # noqa: E402
 
 load_dotenv()
 
 
 def main(questions_file: str, report_file: str) -> None:
-    agent = Agent(open_db(os.environ.get("DB_PATH", "data/uzex.db")), Llm())
+    db_path = os.environ.get("DB_PATH", "data/uzex.db")
+    agent = Agent(None, Llm(), db_path=db_path, resolver=EntityResolver(open_db(db_path)))
     with open(questions_file, encoding="utf-8") as fh:
         questions = [q.strip() for q in fh if q.strip() and not q.startswith("#")]
     with open(report_file, "w", encoding="utf-8") as fh:

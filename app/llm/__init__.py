@@ -6,6 +6,6 @@ Public interface (unchanged for callers):
 """
 
 from app.llm.base import LlmResponse, Provider, ProviderSkip
-from app.llm.client import ChainEntry, Llm, parse_chain
+from app.llm.client import ChainEntry, Llm, LlmDeadline, parse_chain
 
-__all__ = ["ChainEntry", "Llm", "LlmResponse", "Provider", "ProviderSkip", "parse_chain"]
+__all__ = ["ChainEntry", "Llm", "LlmDeadline", "LlmResponse", "Provider", "ProviderSkip", "parse_chain"]
