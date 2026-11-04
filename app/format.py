@@ -17,6 +17,7 @@ from app.agent import AgentAnswer
 MAX_SQL_CHARS = 700
 EVIDENCE_OPEN = "<blockquote expandable>"
 _BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+_ITALIC_RE = re.compile(r"(?<![\w_])__(.+?)__(?![\w_])", re.S)
 
 LABELS = {
     "uz": {
@@ -43,8 +44,8 @@ def escape_html(text: str) -> str:
 
 
 def answer_html(text: str) -> str:
-    """Escape user-visible text, then turn **x** markers (from the LLM) into <b>x</b>."""
-    return _BOLD_RE.sub(r"<b>\1</b>", escape_html(text))
+    """Escape user-visible text, then turn **x** into <b>x</b> and __x__ into <i>x</i>."""
+    return _ITALIC_RE.sub(r"<i>\1</i>", _BOLD_RE.sub(r"<b>\1</b>", escape_html(text)))
 
 
 def render(ans: AgentAnswer, *, show_sql: bool = True) -> str:
@@ -61,7 +62,7 @@ def render(ans: AgentAnswer, *, show_sql: bool = True) -> str:
     else:
         parts.append(f"\n✅ {labels['verified']} · {len(ans.rows)} {labels['rows']} · {ans.elapsed_sec:.1f} s")
     if ans.interpretation:
-        parts.append(f"🔎 {labels['interp']}: {escape_html(ans.interpretation)}")
+        parts.append(f"🔎 {labels['interp']}: <i>{escape_html(ans.interpretation)}</i>")
     if show_sql:
         sql = ans.sql if len(ans.sql) <= MAX_SQL_CHARS else ans.sql[:MAX_SQL_CHARS] + " …"
         parts.append(f"{EVIDENCE_OPEN}▸ {labels['sql']}\n<code>{escape_html(sql)}</code></blockquote>")

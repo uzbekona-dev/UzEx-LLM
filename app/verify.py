@@ -23,10 +23,11 @@ _DMY_RE = re.compile(r"\b\d{2}\.\d{2}\.\d{4}\b")
 _BROKER_RE = re.compile(r"\bBK\d{3}\b")
 _DATE_RE = re.compile(r"\b(\d{4}-\d{2}-\d{2}|\d{2}\.\d{2}\.\d{4})\b")
 _LEGAL_FORMS = (
-    r"MCHJ|MChJ|OOO|ООО|МЧЖ|AJ|АЖ|АО|XK|ХК|QK|ҚК|OK|ОК|ЧП|XICHJ|FERMER|Fermer|JAMIYATI|KLASTER|Klaster|BROKER|Broker"
+    r"MCHJ|MChJ|OOO|ООО|МЧЖ|AJ|АЖ|АО|XK|ХК|QK|ҚК|OK|ОК|ЧП|XICHJ|JAMIYATI"
 )
-_QUOTED_RE = re.compile(r"[«\"“„']([^«»\"“”„']{3,80})[»\"”']")
-_LEGAL_NAME_RE = re.compile(rf"((?:[\w'‘’`\-\.]+\s+){{1,5}}(?:{_LEGAL_FORMS}))(?![\w])")
+# no plain apostrophe here: in Uzbek it is a letter (o', g', ma'lumot), not a quote
+_QUOTED_RE = re.compile(r"[«\"“„]([^«»\"“”„\n]{3,80})[»\"”]")
+_LEGAL_NAME_RE = re.compile(rf"((?:[\w'‘’`\-\.]+[ \t]+){{1,5}}(?:{_LEGAL_FORMS}))(?![\w])")  # one line only
 SMALL_INT_MAX = 12
 
 

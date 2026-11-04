@@ -20,7 +20,7 @@ def test_render_has_answer_basis_and_collapsed_sql() -> None:
     out = render(_ans())
     assert out.startswith("Jami <b>12 345 kg</b> sotilgan")
     assert "✅ Ma'lumotlar asosida · 1 qator · 1.2 s" in out
-    assert "🔎 Talqin: 2024-yil" in out
+    assert "🔎 Talqin: <i>2024-yil" in out
     assert out.endswith(f"{EVIDENCE_OPEN}▸ So'rov (SQL)\n<code>SELECT 1</code></blockquote>")
 
 
@@ -42,3 +42,8 @@ def test_render_empty_result_suggests_rephrase() -> None:
 def test_render_plain_strips_markup() -> None:
     out = render_plain(_ans())
     assert "**" not in out and "<" not in out and "SELECT 1" in out
+
+
+def test_answer_html_italic_marker() -> None:
+    assert answer_html("__izoh__ va **raqam**") == "<i>izoh</i> va <b>raqam</b>"
+    assert answer_html("total_deals_all") == "total_deals_all"  # snake_case is not italic

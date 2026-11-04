@@ -76,3 +76,21 @@ def test_id_columns_are_not_thousand_grouped() -> None:
     assert format_value(100003, None, "ru", "deal_no") == "100003"
     assert format_value(2024, None, "uz", "year") == "2024"
     assert format_value(100003, None, "ru", "amount") == "100 003"
+
+
+def test_generic_fallback_is_readable_and_verifiable() -> None:
+    from app.verify import verify_answer
+    cols = ["code", "name", "deal_count"]
+    rows = [("BK111", '"Gucham Broker" MChJ', 6692), ("BK005", "NAXON BROKER AJ", 5690)]
+    from app.render import render_generic
+    out = render_generic(cols, rows, "uz")
+    assert "1. BK111 — \"Gucham Broker\" MChJ · Bitimlar soni: **6 692**" in out
+    assert verify_answer(out, rows, "q").ok
+    one = render_generic(["deal_no", "deal_date", "volume", "unit"], [(100003, "2022-01-03", 23.0, "тонна")], "uz")
+    assert "Bitim №: **100003**" in one and "Sana: **03.01.2022**" in one and "Hajm: **23 tonna**" in one
+
+
+def test_uzbek_apostrophes_are_not_company_quotes() -> None:
+    from app.verify import verify_answer
+    text = "Ma'lumotlardan to'g'ridan-to'g'ri: Bo'juk ta'minot — **5 ta**"
+    assert verify_answer(text, [(5,)], "q").ok

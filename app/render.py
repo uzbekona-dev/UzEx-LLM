@@ -85,7 +85,7 @@ def format_value(value: object, modifier: str | None, lang: str, column: str = "
             return format_number(round(value), decimals=0)
         return format_number(value)
     text = str(value)
-    if modifier == "date":
+    if modifier == "date" or (modifier is None and "date" in column.lower()):
         return format_date(text)
     if lang == "uz":
         return _UZ_LABELS.get(text, text)
@@ -145,14 +145,81 @@ def render_template(spec: RenderSpec, columns: list[str], rows: list[tuple], lan
     return "\n".join(parts).strip()
 
 
+# Human labels for common column names (substring match on the snake_case name, first hit wins).
+_COLUMN_LABELS: list[tuple[str, str, str]] = [
+    ("cancel", "Bekor qilingan", "Аннулировано"),
+    ("active", "Amaldagi", "Действующих"),
+    ("deal_count", "Bitimlar soni", "Сделок"), ("deals_total", "Bitimlar soni", "Сделок"),
+    ("total_deals", "Bitimlar soni", "Сделок"), ("deals", "Bitimlar", "Сделок"),
+    ("contract_count", "Shartnomalar soni", "Контрактов"), ("contracts", "Shartnomalar", "Контрактов"),
+    ("weighted", "O'rtacha vaznli narx", "Средневзвешенная цена"),
+    ("avg_price", "O'rtacha narx", "Средняя цена"), ("avg", "O'rtacha", "Среднее"),
+    ("min", "Eng kichik", "Минимум"), ("max", "Eng katta", "Максимум"),
+    ("unit_price", "Narx (birlik uchun)", "Цена за единицу"), ("start_price", "Boshlang'ich narx", "Стартовая цена"),
+    ("price", "Narx", "Цена"), ("rate", "Kurs", "Курс"),
+    ("amount_uzs", "Summa (so'm)", "Сумма (сум)"), ("amount", "Summa", "Сумма"),
+    ("volume", "Hajm", "Объём"), ("quantity", "Miqdor", "Количество"), ("lot", "Lot", "Лот"),
+    ("deal_no", "Bitim №", "Сделка №"), ("contract_no", "Shartnoma №", "Контракт №"),
+    ("deal_date", "Sana", "Дата"), ("date", "Sana", "Дата"),
+    ("seller_name", "Sotuvchi", "Продавец"), ("buyer_name", "Xaridor", "Покупатель"),
+    ("seller_inn", "Sotuvchi STIR", "ИНН продавца"), ("buyer_inn", "Xaridor STIR", "ИНН покупателя"),
+    ("inn", "STIR", "ИНН"), ("code", "Kod", "Код"), ("name", "Nomi", "Название"),
+    ("product", "Tovar", "Товар"), ("region", "Hudud", "Регион"), ("status", "Holati", "Статус"),
+    ("year", "Yil", "Год"), ("month", "Oy", "Месяц"), ("count", "Soni", "Количество"),
+]
+_TITLE_COLUMNS = ("code", "name", "seller_name", "buyer_name", "product", "region", "inn")
+
+
+def _label(column: str, lang: str) -> str:
+    low = column.lower()
+    for key, uz, ru in _COLUMN_LABELS:
+        if key in low:
+            return uz if lang == "uz" else ru
+    return column.replace("_", " ").capitalize()
+
+
+def _pair_units(columns: list[str]) -> dict[str, str]:
+    """volume -> unit, amount -> currency: print '1 234 kg' instead of two separate fields."""
+    pairs: dict[str, str] = {}
+    if "unit" in columns:
+        for c in columns:
+            if "volume" in c.lower() or "quantity" in c.lower():
+                pairs[c] = "unit"
+    if "currency" in columns:
+        for c in columns:
+            if c.lower().startswith("amount") and "uzs" not in c.lower():
+                pairs[c] = "currency"
+    return pairs
+
+
 def render_generic(columns: list[str], rows: list[tuple], lang: str) -> str:
-    """Column: value listing used when the template is unusable — plain but never wrong."""
+    """Readable fallback when the template is unusable: numbered rows, human labels, bold figures.
+
+    Never wrong (values only from rows), just less fluent than a template.
+    """
     if not rows:
         return "Ma'lumotlarda mos yozuv topilmadi." if lang == "uz" else "В данных подходящих записей нет."
-    head = "Natija (ma'lumotlardan to'g'ridan-to'g'ri):" if lang == "uz" else "Результат (напрямую из данных):"
+    pairs = _pair_units(columns)
+    hidden = set(pairs.values())
+    titles = [c for c in columns if c in _TITLE_COLUMNS and c not in hidden][:2]
+    head = "__Natija (ma'lumotlardan to'g'ridan-to'g'ri):__" if lang == "uz" else "__Результат (напрямую из данных):__"
     lines = [head]
-    for row in rows[:MAX_LINES]:
-        lines.append("; ".join(f"{c}: {format_value(v, None, lang, c)}" for c, v in zip(columns, row)))
+    for i, row in enumerate(rows[:MAX_LINES], 1):
+        rec = dict(zip(columns, row))
+        title = " — ".join(format_value(rec[c], None, lang, c) for c in titles if rec[c] is not None)
+        facts = []
+        for c in columns:
+            if c in titles or c in hidden:
+                continue
+            value = format_value(rec[c], None, lang, c)
+            if c in pairs and rec.get(pairs[c]) is not None:
+                value = f"{value} {format_value(rec[pairs[c]], None, lang, pairs[c])}"
+            facts.append(f"{_label(c, lang)}: **{value}**")
+        body = " · ".join(facts)
+        prefix = f"{i}. " if len(rows) > 1 else ""
+        lines.append(f"{prefix}{title}" + (f" · {body}" if title and body else body))
+    if len(rows) > MAX_LINES:
+        lines.append("…")
     return "\n".join(lines)
 
 

@@ -85,7 +85,7 @@ def test_template_with_literal_number_is_rejected_then_generic() -> None:
     llm = ScriptedLlm([json.dumps(bad), json.dumps(bad), json.dumps(bad)])
     ans = Agent(None, llm, db_path=DB).ask("100001-bitim summasi?")
     assert ans.verified and not ans.used_template
-    assert ans.answer.startswith("Natija") and "999" not in ans.answer
+    assert "Natija" in ans.answer[:12] and "999" not in ans.answer
     assert "Template problems" in llm.calls[1]
 
 
