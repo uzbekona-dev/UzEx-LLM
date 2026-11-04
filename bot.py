@@ -6,7 +6,6 @@ import asyncio
 import logging
 import os
 from collections.abc import AsyncIterator
-from collections import deque
 from contextlib import asynccontextmanager
 
 from aiogram import Bot, Dispatcher, F, Router
@@ -21,6 +20,7 @@ from dotenv import load_dotenv
 from app.agent import Agent, record_qa
 from app.entities import EntityResolver
 from app.format import EVIDENCE_OPEN, render
+from app.history import ChatHistory
 from app.llm import Llm
 from app.sql_guard import open_db
 
@@ -117,23 +117,6 @@ def _split_plain(text: str, limit: int) -> list[str]:
         chunks.append(rest[:cut].rstrip())
         rest = rest[cut:].lstrip("\n")
     return chunks + ([rest] if rest else [])
-
-
-class ChatHistory:
-    """Last few (question, interpretation) pairs per chat so follow-ups like "va 2023-da?" resolve."""
-
-    def __init__(self, turns: int = 2) -> None:
-        self._turns = turns
-        self._by_chat: dict[int, deque[tuple[str, str]]] = {}
-
-    def get(self, chat_id: int) -> list[tuple[str, str]]:
-        return list(self._by_chat.get(chat_id, ()))
-
-    def add(self, chat_id: int, question: str, interpretation: str) -> None:
-        self._by_chat.setdefault(chat_id, deque(maxlen=self._turns)).append((question, interpretation))
-
-    def clear(self, chat_id: int) -> None:
-        self._by_chat.pop(chat_id, None)
 
 
 class ChatLocks:

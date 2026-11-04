@@ -15,6 +15,22 @@ The bot is a single Python process that long-polls Telegram. It needs three thin
 
 Pick one of the three ways below.
 
+## 0. Web version (no Telegram needed)
+
+The same agent is also served as a small web page (FastAPI + uvicorn, `web.py` + `web/index.html`), useful when
+a jury member has no Telegram. It needs `.env` with an LLM key and `data/uzex.db`, but **not** `TELEGRAM_BOT_TOKEN`,
+and it does not poll the bot token, so it can run next to the bot.
+
+```bash
+python -X utf8 -m uvicorn web:app --host 0.0.0.0 --port 8080
+# open http://<host>:8080   health: curl http://localhost:8080/api/health
+```
+
+Linux: `sudo cp deploy/uzex-web.service /etc/systemd/system/ && sudo systemctl enable --now uzex-web`
+(same paths/user as `uzex-bot.service`). The page is plain HTTP; put nginx/caddy with TLS in front if it is
+exposed publicly. Each browser tab keeps its own session (last 2 turns of context, one question in flight at a time);
+every answered question is appended to `logs/qa.jsonl` with `"channel": "web"`.
+
 ## 1. Windows (PowerShell restart loop)
 
 ```powershell

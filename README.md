@@ -35,6 +35,7 @@ cp .env.example .env                           # fill in at least one LLM key an
 
 # 3. Run
 python -X utf8 bot.py                          # Telegram bot (long polling)
+python -X utf8 -m uvicorn web:app --host 0.0.0.0 --port 8080   # web UI at http://localhost:8080 (no Telegram needed)
 python -X utf8 cli.py "2024-yilda qancha paxta sotilgan?"   # one question from the terminal
 DEBUG=1 python -X utf8 cli.py "Кто покупатель по сделке 100001?"   # + planner/verifier debug trail
 ```
@@ -87,7 +88,7 @@ rejects the template (a literal number not in the question/SQL, an unknown colum
 ## Tests
 
 ```bash
-python -X utf8 -m pytest tests -q                 # 138 offline tests, no LLM, ~10 s (needs data/uzex.db for a few)
+python -X utf8 -m pytest tests -q                 # 206 offline tests, no LLM, ~10 s (needs data/uzex.db for a few)
 python -X utf8 -m pytest tests/test_llm.py -q     # only the LLM chain logic (fake providers)
 python -X utf8 -m pytest tests/test_golden_offline.py -q   # golden SQL still gives the expected values on the DB
 
@@ -107,8 +108,10 @@ including 6 traps (missing deal number, data outside the period, people/phones, 
 ```
 .
 ├── bot.py                     Telegram bot entry point (aiogram 3): commands, per-chat queue, evidence block
+├── web.py                     Web UI entry point (FastAPI): GET /, POST /api/ask, GET /api/health
+├── web/index.html             Single-file web page (vanilla JS, uz/ru toggle, example chips, SQL basis block)
 ├── cli.py                     Ask one question from the terminal
-├── requirements.txt           google-genai, aiogram, python-dotenv, rapidfuzz, anthropic, openai
+├── requirements.txt           google-genai, aiogram, python-dotenv, rapidfuzz, anthropic, openai, fastapi, uvicorn
 ├── .env.example               All configuration variables with comments
 ├── TAHLIL.md                  Requirements, scoring and data-trap analysis (uz)
 ├── docs/
@@ -124,6 +127,7 @@ including 6 traps (missing deal number, data outside the period, people/phones, 
 │   ├── dictionaries.py        40 TN VED products (ru/uz/aliases), regions, statuses, grade words, data period
 │   ├── normalize.py           Number/date parsing, grade/class parsing, Cyrillic->Latin translit, company_key
 │   ├── format.py              Telegram HTML / plain rendering of an answer with its evidence block
+│   ├── history.py             Last-2-turns chat history per chat / web session (used by bot.py and web.py)
 │   └── llm/
 │       ├── client.py          Fallback chain over providers, retries, deadline
 │       ├── providers.py       Gemini / Anthropic / OpenAI adapters (lazy SDK import)
@@ -141,6 +145,7 @@ including 6 traps (missing deal number, data outside the period, people/phones, 
 │   ├── test_llm.py            provider chain logic
 │   ├── test_bot.py            message splitting, chat locks/history
 │   ├── test_format.py         rendering
+│   ├── test_web.py            web endpoints with a fake agent (validation, history, rate limit)
 │   ├── test_golden_offline.py golden SQL vs DB
 │   ├── golden.jsonl           40 golden questions with ground-truth SQL and expected values
 │   ├── questions.txt          Questions for run_questions.py
