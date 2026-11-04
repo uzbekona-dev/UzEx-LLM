@@ -22,6 +22,7 @@ COMPANY_LIMIT = 5
 COMPANY_CUTOFF = 85
 BROKER_CUTOFF = 90
 MAX_PHRASES = 2
+GUESS_CUTOFF = 90  # n-gram fallback must be nearly exact
 MAX_SUBSTRING_HITS = 10  # a key found as substring in more participants than this is too generic
 
 
@@ -269,6 +270,34 @@ class EntityResolver:
         return Resolution(products=resolve_products(question), companies=companies, brokers=_unique(brokers),
                           inns=inns, deal_nos=deal_nos, unmatched_phrases=unmatched)
 
+    def guess_phrases(self, question: str) -> list[str]:
+        """Fallback for lowercase / Cyrillic names without quotes or legal form ("кожо инвест"):
+        2-3 word n-grams of the question matched against participant keys (script variants, then strict fuzzy).
+        Returns the grams as written in the question so they can be masked."""
+        tokens = [(m.group(0), translit(m.group(0))) for m in _WORD_RE.finditer(question)]
+        tokens = [(o, t) for o, t in tokens if t.isalpha() and len(t) >= 3 and t not in _STOP_WORDS and t not in _REGION_WORDS]
+        found: list[str] = []
+        for n in (3, 2):
+            for i in range(len(tokens) - n + 1):
+                orig = " ".join(o for o, _ in tokens[i:i + n])
+                key = " ".join(t for _, t in tokens[i:i + n])
+                if any(key in company_key(f) for f in found):
+                    continue
+                if self._exact_variant_hits(key) or self._strict_fuzzy(key):
+                    found.append(orig)
+        return found[:MAX_PHRASES]
+
+    def _strict_fuzzy(self, key: str) -> bool:
+        hit = process.extractOne(key, self._keys, scorer=fuzz.WRatio, score_cutoff=GUESS_CUTOFF)
+        return bool(hit) and abs(len(hit[0]) - len(key)) <= 2
+
+    def _exact_variant_hits(self, key: str) -> list[str]:
+        """Participant keys equal to / containing a script variant of the key (RU 'к' for UZ 'q', 'х' for 'x'...)."""
+        hits: list[str] = []
+        for variant in _key_variants(key):
+            hits += [k for k in self._keys if variant == k or (len(variant) >= 6 and variant in k)]
+        return _unique(hits)[:MAX_SUBSTRING_HITS]
+
     def match_phrase(self, phrase: str) -> tuple[str, list[CompanyHit] | str | None]:
         """Classify one name phrase: ('broker', 'BK045') | ('companies', [hits]) | ('none', None)."""
         key = company_key(phrase)
@@ -289,6 +318,9 @@ class EntityResolver:
         if len(substr) <= MAX_SUBSTRING_HITS:
             for k in substr:
                 scores[k] = 100
+        if not scores:
+            for k in self._exact_variant_hits(key):
+                scores[k] = 100
         for k, score, _ in process.extract(key, self._keys, scorer=fuzz.WRatio, limit=COMPANY_LIMIT,
                                            score_cutoff=COMPANY_CUTOFF):
             scores.setdefault(k, int(score))
@@ -298,6 +330,17 @@ class EntityResolver:
                 for k, s in scores.items() for inn in self._key_to_inns[k]]
         hits.sort(key=lambda h: (-h.score, h.inn))
         return hits[:COMPANY_LIMIT * 2]
+
+
+_VARIANT_PAIRS = (("k", "q"), ("x", "h"), ("w", "v"), ("ts", "c"), ("yo", "e"), ("ye", "e"))
+
+
+def _key_variants(key: str) -> list[str]:
+    """Spelling variants between Russian and Uzbek transliteration: kojo -> qojo, xojo -> hojo ..."""
+    variants = {key}
+    for a, b in _VARIANT_PAIRS:
+        variants |= {v.replace(a, b) for v in variants} | {v.replace(b, a) for v in variants}
+    return [v for v in variants if v != key] + [key]
 
 
 def _unique(items) -> list:

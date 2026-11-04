@@ -89,7 +89,8 @@ class Pseudonymizer:
             legend.append(f"- {ph}: a broker code (use seller_broker = '{ph}' OR buyer_broker = '{ph}')")
 
         c = 0
-        for phrase in extract_phrases(question):
+        phrases = extract_phrases(question) or self.resolver.guess_phrases(question)
+        for phrase in phrases:
             kind, payload = self.resolver.match_phrase(phrase)
             if kind == "broker":
                 b += 1
