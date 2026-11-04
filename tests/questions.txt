@@ -1,0 +1,27 @@
+# Test questions (one per line). Run: python scripts/run_questions.py
+# RU
+Кто покупатель и продавец по сделке 100001?
+Сколько тонн хлопка-сырца продано в 2024 году?
+Какая средняя цена портландцемента за тонну в марте 2023 года?
+Топ-5 брокеров по количеству сделок в 2025 году
+Сколько сделок аннулировано в 2026 году?
+Какой курс доллара был 15.06.2024?
+Сумма экспортных сделок в 2023 году в сумах
+Сколько сделок у компании Qojo Invest?
+Расскажи о сделке 100003
+Кто директор компании с ИНН 953758401?
+Какой объём торгов пшеницей был в 2021 году?
+В каком регионе больше всего сделок по муке?
+# UZ
+100001-bitim bo'yicha xaridor va sotuvchi kim?
+2024-yilda qancha tonna paxta xomashyosi sotilgan?
+2023-yil mart oyida sementning o'rtacha narxi qancha bo'lgan?
+2025-yilda eng ko'p bitim qilgan 5 ta broker
+2026-yilda nechta bitim bekor qilingan?
+15.06.2024 kuni dollar kursi qancha edi?
+STIR 953758401 qaysi kompaniya va qaysi viloyatda?
+Namangan viloyatida 2025-yilda eng ko'p sotilgan tovar qaysi?
+BK045 brokeri jami nechta bitimda qatnashgan?
+Noyabr 2026 da qancha un sotilgan?
+Eng yirik bitim qaysi?
+Yetkazib berish muddati kechikkan bitimlar soni qancha?

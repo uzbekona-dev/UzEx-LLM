@@ -1,0 +1,7 @@
+data/raw/
+data/uzex_spot_data.zip
+data/*.db
+.env
+__pycache__/
+*.pyc
+.venv/
