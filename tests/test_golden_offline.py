@@ -44,16 +44,52 @@ def con():
     return open_db(DB)
 
 
+REQUIRED_KEYS = {"id", "q", "sql", "expect", "unanswerable", "tags"}
+OPTIONAL_KEYS = {"forbidden"}
+
+
 def test_golden_file_shape() -> None:
-    assert len(ENTRIES) == 40
-    assert len({e.id for e in ENTRIES}) == 40
+    assert len(ENTRIES) == 100
+    assert [e.id for e in ENTRIES] == [f"g{i:02d}" for i in range(1, 101)]
     with open(GOLDEN, encoding="utf-8") as fh:
         for line in fh:
             if line.strip():
                 raw = json.loads(line)
-                assert set(raw) == {"id", "q", "sql", "expect", "unanswerable", "tags"}, raw["id"]
-    assert sum(1 for e in ENTRIES if e.unanswerable) == 6
-    assert sum(1 for e in ENTRIES if "uz" in e.tags) == sum(1 for e in ENTRIES if "ru" in e.tags) == 20
+                assert REQUIRED_KEYS <= set(raw) <= REQUIRED_KEYS | OPTIONAL_KEYS, raw["id"]
+                assert set(raw["expect"]) == {"numbers", "strings"}, raw["id"]
+                assert raw["tags"], raw["id"]
+                if "forbidden" in raw:
+                    assert raw["forbidden"] and all(isinstance(n, (int, float)) for n in raw["forbidden"]), raw["id"]
+                    assert "injection" in raw["tags"], raw["id"]
+    original = [e for e in ENTRIES if int(e.id[1:]) <= 40]
+    assert sum(1 for e in original if e.unanswerable) == 6
+    assert sum(1 for e in original if "uz" in e.tags) == sum(1 for e in original if "ru" in e.tags) == 20
+    # g41-g100: jury-style mix (approximate minimums, see the task description)
+    new = [e for e in ENTRIES if int(e.id[1:]) > 40]
+    assert sum(1 for e in new if "cyr" in e.tags) >= 10
+    assert sum(1 for e in new if "colloq" in e.tags) >= 8
+    assert sum(1 for e in new if "date" in e.tags) >= 8
+    assert sum(1 for e in new if "region-buyer" in e.tags) >= 3
+    assert sum(1 for e in new if "dual" in e.tags) >= 7
+    assert sum(1 for e in new if "multi" in e.tags) >= 7
+    assert sum(1 for e in new if "trap" in e.tags) >= 10
+    assert sum(1 for e in new if e.forbidden) >= 3
+
+
+def test_forbidden_numbers_are_not_expected() -> None:
+    """A forbidden number can never also be an expected number, and the bait must be absent from the SQL rows."""
+    for e in ENTRIES:
+        for bad in e.forbidden:
+            assert bad not in e.numbers, e.id
+
+
+def test_golden_check_honours_forbidden() -> None:
+    from golden_check import forbidden_present
+
+    entry = next(e for e in ENTRIES if e.forbidden)
+    bait = f"{entry.forbidden[0]:g}"
+    assert forbidden_present(entry, f"Javob: {bait}.") == [f"forbidden number {bait} present"]
+    assert forbidden_present(entry, "Ma'lumotlarda bunday savolga javob yo'q.") == []
 
 
 @pytest.mark.parametrize("entry", [e for e in ENTRIES if e.sql], ids=lambda e: e.id)
@@ -71,3 +107,6 @@ def test_golden_sql_matches_expectations(con, entry: GoldenEntry) -> None:
     text = _row_text(result.rows)
     for expected in entry.strings:
         assert translit(expected) in text, f"{entry.id}: string {expected!r} not in rows"
+    for bad in entry.forbidden:
+        assert not any(abs(v - bad) <= REL_TOL * max(1.0, abs(bad)) for v in values), \
+            f"{entry.id}: forbidden number {bad} is a real value in the rows"
