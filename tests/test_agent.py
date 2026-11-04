@@ -142,3 +142,13 @@ def test_critic_fix_is_applied_only_when_it_runs_with_same_columns(monkeypatch: 
     llm = ScriptedLlm([json.dumps(PLAN), json.dumps(bad_verdict)])
     ans = Agent(None, llm, db_path=DB).ask("100001-bitim?")
     assert "other_col" not in ans.sql and ans.used_template  # rejected: different columns
+
+
+def test_tonne_question_with_kg_template_is_sent_back() -> None:
+    sql = "SELECT unit, SUM(volume) AS total_volume FROM deals WHERE tnved = '520100' AND year = 2024 AND is_cancelled = 0 GROUP BY unit"
+    kg_plan = {"language": "uz", "answerable": True, "interpretation": "x", "sql": sql,
+               "render": {"headline": "Jami **{total_volume} {unit}**"}}
+    t_plan = {**kg_plan, "render": {"headline": "Jami **{total_volume:t} tonna** ({total_volume} {unit})"}}
+    llm = ScriptedLlm([json.dumps(kg_plan), json.dumps(t_plan)])
+    ans = Agent(None, llm, db_path=DB).ask("2024-yilda qancha tonna paxta sotilgan?")
+    assert "1 672 494.96 tonna" in ans.answer and "asked in tonnes" in llm.calls[1]

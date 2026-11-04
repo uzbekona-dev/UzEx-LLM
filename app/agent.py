@@ -184,6 +184,20 @@ def record_qa(ans: AgentAnswer, extra: dict | None = None, path: str = QA_LOG_PA
         log.exception("could not write QA log")
 
 
+_TONNE_ASKED_RE = re.compile(r"\b(tonna\w*|tonn\w*|тонн\w*|тонна\w*)\b", re.I)
+
+
+def _tonne_problems(question: str, spec: RenderSpec, result: QueryResult) -> list[str]:
+    """User asked in tonnes but the volume is in kilograms and the template prints raw kg only."""
+    if not _TONNE_ASKED_RE.search(question) or not result.rows:
+        return []
+    kg_columns = [c for c in result.columns if c.lower() in ("unit", "unit_name")]
+    has_kg = any(dict(zip(result.columns, r)).get(c) == "килограмм" for r in result.rows for c in kg_columns)
+    if not has_kg or ":t}" in "".join(spec.texts()):
+        return []
+    return ["the user asked in tonnes and the unit is kilogram: show the volume as {volume_column:t} tonna ({volume_column} kg)"]
+
+
 class _NullMasked:
     """Used when no resolver is configured: nothing is masked."""
 
@@ -282,6 +296,7 @@ class Agent:
                 continue
             spec = RenderSpec.from_plan(plan.get("render"))
             problems = check_template(spec, result.columns, f"{masked.question}\n{plan['sql']}")
+            problems += _tonne_problems(masked.question, spec, result)
             if problems and attempt < MAX_SQL_ATTEMPTS:
                 feedback = f"Template problems: {problems}. Columns available: {result.columns}. Use only slots, no literal values."
                 debug.append(feedback)
