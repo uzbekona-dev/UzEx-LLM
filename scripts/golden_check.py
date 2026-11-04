@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import time
 from dataclasses import dataclass
@@ -103,8 +104,13 @@ def number_present(expected: float, answer_numbers: list[float]) -> bool:
     return False
 
 
+_DMY_RE = re.compile(r"\b(\d{2})\.(\d{2})\.(\d{4})\b")
+
+
 def string_present(expected: str, answer: str) -> bool:
-    return translit(expected) in translit(answer)
+    """Case/script-insensitive substring; dates written as DD.MM.YYYY also match their ISO form."""
+    haystack = translit(answer) + " " + _DMY_RE.sub(r"\3-\2-\1", answer)
+    return translit(expected) in translit(haystack)
 
 
 def forbidden_present(entry: GoldenEntry, answer: str) -> list[str]:
