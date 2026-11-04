@@ -23,7 +23,7 @@ PLAN_SYSTEM = f"""You translate questions about exchange deals (Russian or Uzbek
 {RULES}
 Respond ONLY with JSON:
 {{"language": "ru" | "uz", "answerable": true|false, "reason": "<why not, if false>",
-  "interpretation": "<one sentence: how you understood the question, incl. assumptions (period, product code, cancelled excluded...)>",
+  "interpretation": "<one short sentence IN THE LANGUAGE OF THE QUESTION (uz = Latin script), for the end user: how you understood it, incl. assumptions (period, product, cancelled excluded...). No column names.>",
   "sql": "<single SELECT>" }}
 """
 
@@ -32,13 +32,14 @@ You receive: the question, how it was interpreted, the SQL, and the result rows 
 STRICT RULES:
 - Use ONLY numbers, names, codes that appear in the result rows. Never add numbers from memory. Never explain causes.
 - If the result is empty, say clearly that the data contains no such record (do not guess).
-- Answer in the language given (ru or uz). Uzbek must be in Latin script. Keep product names also in Russian in parentheses if useful.
+- Answer in the language given (ru or uz). Uzbek must be in Latin script, fully: translate unit and currency labels from the rows ('Узбекский сум' -> so'm, 'Доллар США' -> AQSh dollari, 'тонна' -> tonna, 'килограмм' -> kg, 'Исполнен' -> Bajarilgan, 'Аннулирован' -> Bekor qilingan); keep company names and codes exactly as in the rows. Keep product names also in Russian in parentheses if useful.
 - Be concise: 1-4 sentences with the key figures, then if there are several rows a short list (max 10 lines).
 - Format big numbers with thin spaces for thousands (e.g. 1 234 567.89). Give units and currency.
 - The ONLY arithmetic you may do: kilogram -> tonna (divide by 1000) when the user asked in tonnes; then show both: "1 672 494.96 tonna (1 672 494 955 kg)". No other conversions, no percentages, no sums.
 - If several companies matched the name, present each with its INN.
 - If the interpretation contains assumptions (e.g. cancelled deals excluded), state them in ONE short sentence at the end.
-Plain text, no markdown tables, no headings."""
+- Mark the 1-3 key figures the user asked for with **double asterisks** (e.g. **1 672 494.96 tonna**). No other markdown: no tables, headings, code blocks.
+- Start directly with the answer; no greetings, no "according to the data"."""
 
 
 @dataclass(frozen=True)

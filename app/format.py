@@ -1,24 +1,80 @@
-"""Render an AgentAnswer for Telegram / CLI, with the evidence block."""
+"""Render an AgentAnswer for Telegram (HTML) or CLI: answer first, then a short human-readable basis.
+
+Layout (Telegram):
+    <answer, key figures in bold>
+
+    ✅ Ma'lumotlar asosida · 1 qator · 12.9 s
+    🔎 Talqin: <how the question was understood>
+    ▸ SQL (collapsed, expandable quote)
+"""
 
 from __future__ import annotations
+
+import re
 
 from app.agent import AgentAnswer
 
 MAX_SQL_CHARS = 700
+EVIDENCE_OPEN = "<blockquote expandable>"
+_BOLD_RE = re.compile(r"\*\*(.+?)\*\*", re.S)
+
+LABELS = {
+    "uz": {
+        "verified": "Ma'lumotlar asosida",
+        "no_data": "Ma'lumotlarda javob topilmadi",
+        "rows": "qator",
+        "interp": "Talqin",
+        "sql": "So'rov (SQL)",
+        "rephrase": "Savolni boshqacha ifodalab ko'ring, masalan: «2024-yilda qancha paxta sotilgan?»",
+    },
+    "ru": {
+        "verified": "По данным биржи",
+        "no_data": "В данных ответа нет",
+        "rows": "строк",
+        "interp": "Как понят вопрос",
+        "sql": "Запрос (SQL)",
+        "rephrase": "Попробуйте переформулировать, например: «Сколько хлопка продано в 2024 году?»",
+    },
+}
+
+
+def escape_html(text: str) -> str:
+    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def answer_html(text: str) -> str:
+    """Escape user-visible text, then turn **x** markers (from the LLM) into <b>x</b>."""
+    return _BOLD_RE.sub(r"<b>\1</b>", escape_html(text))
 
 
 def render(ans: AgentAnswer, *, show_sql: bool = True) -> str:
-    parts = [ans.answer]
-    if ans.sql and show_sql:
-        lang_uz = ans.language == "uz"
-        head = "📎 Asos" if lang_uz else "📎 Основание"
-        interp = ans.interpretation
-        rows_label = "topilgan qatorlar" if lang_uz else "строк найдено"
-        parts.append(f"\n{head}: {interp}\n{rows_label}: {len(ans.rows)} · {ans.elapsed_sec:.1f}s")
+    labels = LABELS["uz" if ans.language == "uz" else "ru"]
+    parts = [answer_html(ans.answer)]
+    if not ans.answerable:
+        parts.append(f"\nℹ️ {labels['no_data']} · {ans.elapsed_sec:.1f} s")
+        return "\n".join(parts)
+    if not ans.sql:
+        return "\n".join(parts)
+    if not ans.rows:
+        parts.append(f"\n🔍 {labels['no_data']} · {ans.elapsed_sec:.1f} s")
+        parts.append(f"💡 {labels['rephrase']}")
+    else:
+        parts.append(f"\n✅ {labels['verified']} · {len(ans.rows)} {labels['rows']} · {ans.elapsed_sec:.1f} s")
+    if ans.interpretation:
+        parts.append(f"🔎 {labels['interp']}: {escape_html(ans.interpretation)}")
+    if show_sql:
         sql = ans.sql if len(ans.sql) <= MAX_SQL_CHARS else ans.sql[:MAX_SQL_CHARS] + " …"
-        parts.append(f"<pre>{_escape(sql)}</pre>")
+        parts.append(f"{EVIDENCE_OPEN}▸ {labels['sql']}\n<code>{escape_html(sql)}</code></blockquote>")
     return "\n".join(parts)
 
 
-def _escape(text: str) -> str:
-    return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+def render_plain(ans: AgentAnswer) -> str:
+    """CLI variant without HTML."""
+    labels = LABELS["uz" if ans.language == "uz" else "ru"]
+    out = [ans.answer.replace("**", "")]
+    if ans.interpretation:
+        out.append(f"{labels['interp']}: {ans.interpretation}")
+    if ans.sql:
+        out.append(ans.sql)
+    out.append(f"{len(ans.rows)} {labels['rows']} · {ans.elapsed_sec:.1f} s")
+    return "\n".join(out)

@@ -72,10 +72,10 @@ RULES FOR WRITING SQL
 1. Only ONE read-only SELECT (CTEs allowed). No modifications. Always add LIMIT (max 50) unless aggregating to few rows.
 2. Products: filter by deals.tnved (or product_key), never by free-text `product`. If the question names a grade/class, add sort_no / class_no.
 3. Companies: match on participants.name_key with ckey(); if the user gives an INN (9 digits) use inn. Always SELECT inn and name so homonyms are visible. If a name may match several companies, GROUP BY inn so each company is shown separately.
-4. Brokers: by code 'BKxxx' or brokers.name_key. A broker takes part as seller_broker OR buyer_broker — count both unless the question says which side.
+4. Brokers: by code 'BKxxx' or brokers.name_key. A broker takes part as seller_broker OR buyer_broker — count both unless the question says which side. A deal where the same broker is on both sides counts ONCE: use COUNT(DISTINCT deal_no) or UNION (not UNION ALL) in rankings.
 5. Volume = volume column (quantity*lot), never quantity alone unless the question asks for lots. Never sum volumes across different `unit`s — GROUP BY unit. Never sum `amount` across currencies — use amount_uzs or GROUP BY currency.
 6. Final price per unit = unit_price. start_price is the starting price.
-7. "Sold / traded / turnover" by default EXCLUDES cancelled deals (is_cancelled = 0) — and also return the cancelled figure separately when cheap (e.g. SUM(CASE WHEN is_cancelled=1 ...)). Counting deals ("how many deals") includes all statuses unless asked otherwise.
+7. "Sold / traded / turnover" by default EXCLUDES cancelled deals (is_cancelled = 0) — and also return the cancelled figure separately when cheap (e.g. SUM(CASE WHEN is_cancelled=1 ...)). Counting deals ("how many deals") includes all statuses unless asked otherwise. CONSISTENCY: every SUM/AVG/COUNT in one query must use the same cancelled-filter (if the sum excludes cancelled, the deal count next to it must exclude them too — put is_cancelled = 0 in WHERE and give the cancelled count via a separate CASE column).
 8. Dates: data covers 2022-01-03..2026-10-30 only. "This year"/"last month" are relative to 2026-10-30. If the question is outside the period, mark it unanswerable.
 9. For a single deal/contract/company question, select all useful columns (deal_no, deal_date, product, volume, unit, amount, currency, status, seller/buyer inn+name, brokers).
 10. Deal numbers: exact match only. Never substitute a nearby number.

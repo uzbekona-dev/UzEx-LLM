@@ -24,18 +24,19 @@ def main(questions_file: str, report_file: str) -> None:
     agent = Agent(open_db(os.environ.get("DB_PATH", "data/uzex.db")), Llm())
     with open(questions_file, encoding="utf-8") as fh:
         questions = [q.strip() for q in fh if q.strip() and not q.startswith("#")]
-    lines = [f"# Report {time.strftime('%Y-%m-%d %H:%M')} model={agent.llm.model}\n"]
-    for i, q in enumerate(questions, 1):
-        print(f"[{i}/{len(questions)}] {q}")
-        try:
-            a = agent.ask(q)
-            lines += [f"## {i}. {q}", f"**Javob:** {a.answer}", f"*Talqin:* {a.interpretation}",
-                      f"```sql\n{a.sql or '-'}\n```",
-                      f"rows={len(a.rows)} verified={a.verified} answerable={a.answerable} time={a.elapsed_sec:.1f}s\n"]
-        except Exception as exc:  # noqa: BLE001
-            lines += [f"## {i}. {q}", f"**ERROR:** {exc}\n"]
     with open(report_file, "w", encoding="utf-8") as fh:
-        fh.write("\n".join(lines))
+        fh.write(f"# Report {time.strftime('%Y-%m-%d %H:%M')} model={agent.llm.model}\n\n")
+        for i, q in enumerate(questions, 1):
+            print(f"[{i}/{len(questions)}] {q}", flush=True)
+            try:
+                a = agent.ask(q)
+                block = [f"## {i}. {q}", f"**Javob:** {a.answer}", f"*Talqin:* {a.interpretation}",
+                         f"```sql\n{a.sql or '-'}\n```",
+                         f"rows={len(a.rows)} verified={a.verified} answerable={a.answerable} time={a.elapsed_sec:.1f}s\n"]
+            except Exception as exc:  # noqa: BLE001
+                block = [f"## {i}. {q}", f"**ERROR:** {exc}\n"]
+            fh.write("\n".join(block) + "\n")
+            fh.flush()
     print("report ->", report_file)
 
 
