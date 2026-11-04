@@ -4,10 +4,19 @@ Telegram bot (and CLI) that answers questions about commodity-exchange deals in 
 from the provided CSV data (500 000 deals, 6 616 contracts, 14 392 participants, 120 brokers, daily USD rate,
 2022-01-03 .. 2026-10-30). Built for the UZEX AI Hackathon qualifying round.
 
-How it works in one line: entity resolution in code → LLM writes **one read-only SQL** → SQLite computes →
-LLM writes prose → a **grounding verifier** rejects any number / name / code / date that is not in the result
-rows → answer with an "evidence" block (row count, interpretation, SQL). The LLM never calculates and never
-recalls data. Full description for the jury: [docs/SOLUTION.md](docs/SOLUTION.md) (uz + ru).
+How it works in one line: entity resolution in code → company names / INNs / broker codes in the question are
+replaced by `{C1}` / `{INN1}` / `{B1}` → **one** LLM call returns a read-only SQL plus an **answer template**
+with `{column}` slots → tokens are substituted back locally → SQLite computes → the template is filled from the
+rows locally (number formatting, kg → tonne, Uzbek unit/currency/status words) → a template guard and a
+**grounding verifier** reject any number / name / code / date that is not in the result rows → answer with an
+"evidence" block (row count, interpretation, SQL). The LLM never calculates, never recalls data and **never sees
+result rows**; numbers and names enter the answer text only from the database. Full description for the jury:
+[docs/SOLUTION.md](docs/SOLUTION.md) (uz + ru).
+
+What leaves the machine: the table schema and rules, the masked question with a placeholder legend, the SQL and
+the template written by the model. What never leaves: raw data, result rows, participant names and INNs, broker
+codes named by the user, `logs/qa.jsonl`. Product names are not masked (TN VED codes, not personal data). The
+same design is a step toward a fully local model in production: point `OPENAI_BASE_URL` at Ollama / vLLM.
 
 ## Quick start
 
@@ -45,7 +54,7 @@ DEBUG=1 python -X utf8 cli.py "Кто покупатель по сделке 100
 | `OPENAI_BASE_URL` | — | Optional base URL for the `openai` provider (Groq, Ollama, OpenRouter, ...). |
 | `TELEGRAM_BOT_TOKEN` | — | Bot token from @BotFather. Required by `bot.py` only. |
 | `DB_PATH` | `data/uzex.db` | SQLite file built by `scripts/build_db.py`. Opened read-only. |
-| `ANSWER_BUDGET_SEC` | `50` | *(not in .env.example)* Time budget for LLM calls per question; no new LLM call starts after it. |
+| `ANSWER_BUDGET_SEC` | `45` | *(not in .env.example)* Time budget for LLM calls per question; no new LLM call starts after it. |
 | `QA_LOG` | `logs/qa.jsonl` | *(not in .env.example)* Where every answered question is appended (JSON lines). Empty string disables. |
 | `DEBUG` | — | *(cli.py only)* Any value prints the planner / verifier debug trail. |
 
@@ -69,13 +78,16 @@ completions; set `OPENAI_BASE_URL` to use Groq, Ollama or any other OpenAI-compa
 API key is empty are skipped with a warning, so you can list fallbacks before you have the keys. A bare model
 name means `gemini`. If `LLM_MODELS` is unset the legacy `GEMINI_MODEL` list is used.
 
-Time limits per question: 50 s LLM budget (`ANSWER_BUDGET_SEC`), 40 s per LLM request, 20 s per SQL query,
-3 SQL attempts, 2 answer-writing attempts, then a template answer built directly from the rows.
+Time limits per question: 45 s LLM budget (`ANSWER_BUDGET_SEC`), 40 s per LLM request, 20 s per SQL query.
+Normally a question costs one LLM call; up to 3 planning attempts when the SQL fails or the template guard
+rejects the template (a literal number not in the question/SQL, an unknown column), then a generic
+"column: value" rendering built directly from the rows. Measured on the 40-question golden set: 37/40,
+2.3–19 s per question, median about 6 s (about 10 s with the previous two-call pipeline).
 
 ## Tests
 
 ```bash
-python -X utf8 -m pytest tests -q                 # 124 offline tests, no LLM, ~10 s (needs data/uzex.db for a few)
+python -X utf8 -m pytest tests -q                 # 138 offline tests, no LLM, ~10 s (needs data/uzex.db for a few)
 python -X utf8 -m pytest tests/test_llm.py -q     # only the LLM chain logic (fake providers)
 python -X utf8 -m pytest tests/test_golden_offline.py -q   # golden SQL still gives the expected values on the DB
 
@@ -102,7 +114,9 @@ including 6 traps (missing deal number, data outside the period, people/phones, 
 ├── docs/
 │   └── SOLUTION.md            Solution description for the jury (uz + ru)
 ├── app/
-│   ├── agent.py               Question -> plan JSON -> SQL -> rows -> prose -> verify -> fallback; time budget; QA log
+│   ├── agent.py               Question -> mask -> one LLM call (SQL + template JSON) -> SQL -> rows -> render -> verify; time budget; QA log
+│   ├── pseudonym.py           Masks company names / INNs / broker codes as {C1} {INN1} {B1}; substitutes real values into SQL locally
+│   ├── render.py              Fills the answer template from rows (formatting, kg->t, uz translations); template guard; generic fallback
 │   ├── schema_prompt.py       DB schema + SQL rules shown to the LLM (single source of truth)
 │   ├── sql_guard.py           Read-only SQL execution: SELECT-only, forbidden keywords, 20 s timeout, LIMIT 50
 │   ├── verify.py              Grounding check: numbers / BK codes / dates / company names must exist in rows
@@ -120,7 +134,9 @@ including 6 traps (missing deal number, data outside the period, people/phones, 
 │   └── golden_check.py        Live run of tests/golden.jsonl with pass/fail per entry
 ├── tests/
 │   ├── test_offline.py        normalize, sql_guard, verify
-│   ├── test_agent.py          agent flow with a fake LLM (retry, fallback, deadline)
+│   ├── test_agent.py          agent flow with a fake LLM (retry, template guard feedback, generic fallback, deadline)
+│   ├── test_privacy.py        mode B guarantees: masking, SQL token substitution, template guard, local rendering
+│   ├── test_parse_json.py     parsing of the planner JSON reply (code fences, bad escapes)
 │   ├── test_entities.py       entity resolution
 │   ├── test_llm.py            provider chain logic
 │   ├── test_bot.py            message splitting, chat locks/history

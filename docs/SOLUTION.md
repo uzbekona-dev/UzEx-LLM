@@ -10,11 +10,14 @@
 Vazifa — 500 000 bitim, 6 616 shartnoma, 14 392 ishtirokchi, 120 broker va kunlik dollar kursi bo'yicha
 savollarga **aniq raqam, nom va kod bilan** javob berish, ma'lumotda javob bo'lmasa — shuni ochiq aytish.
 Topshiriqdagi eng qattiq talab: o'ylab topilgan raqam, kompaniya yoki tovar = saralashdan chiqish. Shuning uchun
-yondashuv bitta prinsipga qurilgan: **LLM hech qachon hisoblamaydi va hech qachon ma'lumot "eslamaydi"**. LLM
-faqat savolni SQL so'roviga tarjima qiladi va SQLite qaytargan qatorlarni matnga aylantiradi. Javobdagi har bir
-raqam, sana, broker kodi va kompaniya nomi kod bilan natija qatorlarida borligi tekshiriladi; tekshiruvdan
-o'tmagan javob qayta yoziladi yoki shablon javob bilan almashtiriladi. Javob ostida foydalanuvchi savol qanday
-tushunilgani, nechta qator topilgani va qaysi SQL ishlatilgani ("asos" bloki)ni ko'radi.
+yondashuv bitta prinsipga qurilgan: **LLM hech qachon hisoblamaydi, ma'lumotni ko'rmaydi va "eslamaydi"**.
+Bitta LLM chaqiruvi savolni SQL so'roviga va javob *shabloniga* (`{ustun}` uyachali matn) tarjima qiladi;
+SQLite hisoblaydi, shablonni qatorlar bilan kod to'ldiradi. LLM natija qatorlarini umuman ko'rmaydi, shuning
+uchun raqam, nom, kod va sana javob matniga faqat bazadagi qatorlardan kiradi — o'ylab topishga joy yo'q.
+Savoldagi kompaniya nomlari, STIR va broker kodlari LLMga yuborilishidan oldin `{C1}`, `{INN1}`, `{B1}`
+belgilariga almashtiriladi ("maxfiylik tuzilma darajasida"). Ustiga-ustak, tayyor matn grounding verifier
+tekshiruvidan o'tadi. Javob ostida foydalanuvchi savol qanday tushunilgani, nechta qator topilgani va qaysi
+SQL ishlatilgani ("asos" bloki)ni ko'radi.
 
 ## 2. Arxitektura
 
@@ -30,8 +33,19 @@ Telegram foydalanuvchi (uz / ru)
    broker → BKxxx, bitim raqami, STIR; "topilmadi" ham aytiladi
         │
         ▼
- LLM reja (app/agent.py, PLAN_SYSTEM) → JSON:
-   {language, answerable, reason, interpretation, sql}
+ Pseudonimizatsiya — kod (app/pseudonym.py)
+   kompaniya nomi → {C1}, aniq STIR → {INN1}, broker kodi/nomi → {B1};
+   LLMga faqat legenda: "{C1}: kompaniya; 2 ta ishtirokchi mos keldi"
+   (ma'lumotda yo'q iboralar o'zgarmaydi — ular bizdagi identifikator emas)
+        │
+        ▼
+ LLM reja — BITTA chaqiruv (app/agent.py, PLAN_SYSTEM + TEMPLATE_RULES) → JSON:
+   {language, answerable, reason, interpretation, sql,
+    render{headline, line, empty, note}}      ← SQL + javob shabloni, qatorlarsiz
+        │
+        ▼
+ Tokenlarni almashtirish — lokal (Masked.substitute_sql)
+   {C1_INNS} → '9120…', '9158…';  {INN1} → '9537…';  {B1} → 'BK045';  {C1_KEY} → ckey(nom)
         │
         ▼
  SQL guard (app/sql_guard.py)
@@ -39,26 +53,32 @@ Telegram foydalanuvchi (uz / ru)
    20 s timeout, LIMIT 50 majburiy          ──► xato bo'lsa LLMga qaytariladi (≤3 urinish)
         │
         ▼
- SQLite natija qatorlari (data/uzex.db)
+ SQLite natija qatorlari (data/uzex.db)      ← LLM bu qatorlarni hech qachon ko'rmaydi
         │
         ▼
- LLM matn yozadi (ANSWER_SYSTEM): faqat qatorlardagi qiymatlar, savol tilida
+ Shablon guard (app/render.py check_template)
+   savolda/SQLda yo'q literal raqam yoki noma'lum ustun → rad ──► LLMga izoh bilan qayta (≤3 urinish)
         │
         ▼
- Grounding verifier (app/verify.py)
+ Shablonni to'ldirish — lokal (app/render.py render)
+   {ustun} {ustun:t} {ustun:date} {row_count} {C1}; raqam formati, birlik/valyuta/holat tarjimasi,
+   ≤10 qator, 0 qator → "empty" matni, "note" → taxminlar; yaroqsiz shablon → umumiy "ustun: qiymat"
+        │
+        ▼
+ Grounding verifier (app/verify.py) — oxirgi himoya chizig'i
    raqamlar / BK kodlar / sanalar / kompaniya nomlari qatorlarda yoki savolda bo'lishi shart
-        │ o'tmadi → LLMga "faqat qatorlardagi qiymatlar" izohi bilan qayta (≤2 urinish)
-        │ yana o'tmadi → shablon javob: qatorlar to'g'ridan-to'g'ri (app/agent.py _fallback_answer)
+        │ o'tmadi → umumiy "ustun: qiymat" ko'rinishi (render_generic)
         ▼
  Javob + "asos" bloki (app/format.py): ✅ qator soni · vaqt · 🔎 talqin · ▸ SQL (yig'iladigan)
         │
         ▼
- logs/qa.jsonl — har savol: SQL, talqin, javob, verified, vaqt
+ logs/qa.jsonl — har savol: SQL, talqin, javob, verified, used_template, vaqt (faqat shu mashinada)
 ```
 
-Vaqt byudjeti: LLM chaqiruvlari uchun jami 50 s (`ANSWER_BUDGET_SEC`); byudjet tugasa yangi LLM chaqiruvi
+Vaqt byudjeti: LLM chaqiruvlari uchun jami 45 s (`ANSWER_BUDGET_SEC`); byudjet tugasa yangi LLM chaqiruvi
 boshlanmaydi va foydalanuvchiga "qayta yuboring" deyiladi. Har bir LLM so'rovi 40 s, har SQL 20 s bilan
-cheklangan — 90 s qattiq limit shunday ta'minlanadi.
+cheklangan — 90 s qattiq limit shunday ta'minlanadi. Oddiy holatda savolga **bitta** LLM chaqiruvi yetadi
+(avvalgi rejimda ikkita: SQL + matn), qayta urinishlar faqat SQL xatosi yoki shablon guard rad etganda.
 
 ## 3. Ma'lumotlarni tayyorlash
 
@@ -96,42 +116,68 @@ TAHLIL.md dagi tuzoqlar va ularning yechimi:
 
 ## 4. Javoblar qanday tekshiriladi
 
-**4.1. LLM hisoblamaydi — SQLite hisoblaydi.** Summa, o'rtacha, top-N, sanalar farqi — hammasi SQLda.
-Matn yozuvchi LLMga ruxsat etilgan yagona arifmetika: kg → tonna (÷1000), va u holda ikkala qiymat
-ko'rsatiladi. Foiz, yig'indi, boshqa konvertatsiya — taqiqlangan (`ANSWER_SYSTEM`).
+**4.1. LLM hisoblamaydi va qatorlarni ko'rmaydi — SQLite hisoblaydi, kod to'ldiradi.** Summa, o'rtacha,
+top-N, sanalar farqi — hammasi SQLda. LLM javob matnini emas, **shablon** yozadi (`render` maydoni):
+`headline` (birinchi/yagona qator uchun 1–2 jumla), `line` (bir necha qator kutilganda har qator uchun bitta
+satr), `empty` (0 qator bo'lganda nima deyish), `note` (taxminlar). Uyachalar: `{ustun}`, `{ustun:t}`
+(kg → tonna, ÷1000 — yagona ruxsat etilgan arifmetika, uni ham kod bajaradi), `{ustun:int}`, `{ustun:date}`
+(DD.MM.YYYY), `{row_count}`, `{C1}`/`{INN1}`/`{B1}`. `app/render.py` shablonni SQLite qatorlari bilan lokal
+to'ldiradi: raqamlarni formatlaydi (`1 234 567.89`), identifikator ustunlarini (bitim raqami, STIR, yil, kod)
+mingliklarga bo'lmaydi, o'zbek tilida birlik/valyuta/holat so'zlarini tarjima qiladi ("тонна" → "tonna",
+"Узбекский сум" → "so'm", "Исполнен" → "Bajarilgan"), ko'pi bilan 10 satr chiqaradi.
 
-**4.2. Grounding verifier** (`app/verify.py`, har javob uchun kodda):
+**4.2. Shablon guard** (`app/render.py: check_template`, har reja uchun kodda). Shablon rad etiladi, agar unda
+savolda yoki SQLda yo'q literal raqam bo'lsa (12 gacha bo'lgan butun sonlar — "top-5", "2 ta" — ruxsat) yoki
+SELECTda yo'q ustun ishlatilsa, yoki `headline` ham, `line` ham bo'sh bo'lsa. Rad etilsa rejalashtiruvchi LLMga
+muammo ro'yxati va mavjud ustunlar bilan qayta so'rov yuboriladi (jami 3 urinish); shunda ham o'tmasa — umumiy
+"ustun: qiymat" ko'rinishi (`render_generic`): chiroyli emas, lekin to'g'ri.
+
+**4.3. Grounding verifier** (`app/verify.py`) — tayyor matn uchun oxirgi himoya chizig'i, shablon tufayli
+odatda ishga tushmaydi, lekin saqlab qolingan:
 - Javobdagi har bir raqam natija qatorlaridagi biror katakka teng bo'lishi shart (yoki uning 0–2 kasrgacha
   yaxlitlangani; "ming/mln/mlrd" so'zi bo'lsa — shu masshtabga bo'lingani; "tonna" bo'lsa — ÷1000).
   Savoldagi va SQLdagi literallar (yil, bitim raqami, STIR, TN VED) ham ruxsat etiladi; qatorlar soni ham.
 - `BKxxx` broker kodlari va sanalar (ISO yoki `DD.MM.YYYY`) qatorlarda yoki savolda bo'lishi shart.
 - Kompaniya nomlari (qo'shtirnoqda yoki MChJ/OOO/AJ... bilan tugaydigan) `company_key` orqali
   qatorlardagi biror matn katagida bo'lishi shart.
-- O'tmasa → LLMga qaysi qiymatlar qatorlarda yo'qligi aytilib qayta yozdiriladi (2 urinish); yana o'tmasa →
-  LLM matni butunlay tashlanadi, javob sifatida qatorlar o'zi ("Natija (ma'lumotlardan to'g'ridan-to'g'ri)")
-  ko'rsatiladi. Ya'ni o'ylab topilgan raqam foydalanuvchiga yetib bormaydi.
+- O'tmasa → shablon matni tashlanadi, javob sifatida qatorlar o'zi ("Natija (ma'lumotlardan
+  to'g'ridan-to'g'ri)") ko'rsatiladi. Ya'ni o'ylab topilgan raqam foydalanuvchiga yetib bormaydi.
 
-**4.3. "Ma'lumot yo'q" siyosati.** Rejalashtiruvchi LLM `answerable=false` qo'yadi, agar savol: davr
+**4.4. "Ma'lumot yo'q" siyosati.** Rejalashtiruvchi LLM `answerable=false` qo'yadi, agar savol: davr
 tashqarisida (2021, noyabr 2026), sxemada yo'q narsa haqida (rahbar, telefon, sabab, prognoz), ro'yxatda yo'q
-tovar (oltin) bo'lsa. Bo'sh natija (mavjud bo'lmagan bitim raqami) ham "bunday yozuv yo'q" deb qaytadi; kod
-ham, LLM ham yaqin qiymatni "taxmin" qilmaydi. Entity resolution kompaniya nomini topa olmasa, buni LLMga aytadi
-va LLM o'xshash boshqa kompaniyani olmaydi.
+tovar (oltin) bo'lsa. Bo'sh natija (mavjud bo'lmagan bitim raqami) shablonning `empty` matni bilan qaytadi
+("bunday yozuv yo'q"); kod ham, LLM ham yaqin qiymatni "taxmin" qilmaydi. Entity resolution kompaniya nomini
+topa olmasa, legendada "bu ibora hech bir ishtirokchiga mos kelmadi" deyiladi va LLM o'xshash boshqa
+kompaniyani olmaydi.
 
-**4.4. Taxminlar ochiq aytiladi.** Reja JSONdagi `interpretation` — savol tilida bir jumla: davr, tovar
+**4.5. Taxminlar ochiq aytiladi.** Reja JSONdagi `interpretation` — savol tilida bir jumla: davr, tovar
 (TN VED), bekorlar chiqarilgani, formula (hajm = miqdor × lot). U javob ostida "🔎 Talqin" sifatida
-ko'rinadi, SQL esa yig'iladigan blokda. Komissiya har javobning asosini ko'ra oladi.
+ko'rinadi, SQL esa yig'iladigan blokda; shablondagi `note` javob oxirida. Komissiya har javobning asosini
+ko'ra oladi.
 
-**4.5. SQL xavfsizligi.** Baza `mode=ro` bilan ochiladi; faqat bitta `SELECT`/`WITH`; `insert/update/
+**4.6. SQL xavfsizligi.** Baza `mode=ro` bilan ochiladi; faqat bitta `SELECT`/`WITH`; `insert/update/
 delete/drop/attach/pragma/...` taqiqlangan; `LIMIT` bo'lmasa 50 qo'shiladi; 20 s progress-handler timeout.
 
-**4.6. Vaqt va ishonchlilik.** LLM chaqiruvlari uchun 50 s byudjet, har so'rov 40 s, SQL 20 s — 90 s
+**4.7. Vaqt va ishonchlilik.** LLM chaqiruvlari uchun 45 s byudjet, har so'rov 40 s, SQL 20 s — 90 s
 limitdan oshmaydi. LLM zanjiri: `LLM_MODELS=gemini:...,anthropic:...,openai:...` — har model 2 marta (429/5xx/
 timeout), keyin keyingisi; auth xatosi bo'lsa darhol keyingisi. Bitta vendor ishlamasa bot ishlayveradi.
 Har chat uchun navbat (asyncio.Lock), har savol alohida DB ulanish — parallel chatlar bir-biriga xalaqit bermaydi.
 
-**4.7. Testlar.**
-- `tests/` — 124 ta offline pytest (LLMsiz): normalizatsiya, SQL guard, verifier, entity resolution, bot
-  xabarlarini bo'lish, LLM zanjiri (soxta provayderlar bilan), formatlash.
+**4.8. Maxfiylik.** Tashqi LLMga mashinadan chiqadigan narsa: jadval sxemasi va qoidalar (`app/schema_prompt.py`),
+niqoblangan savol va placeholder legendasi, oldingi 2 savolning talqini, LLM o'zi yozgan SQL va shablon.
+Hech qachon chiqmaydigan narsa: xom CSV/baza, SQL natija qatorlari, ishtirokchi nomlari va STIRlari,
+foydalanuvchi yozgan broker kodlari, `logs/qa.jsonl`. Kompaniya nomi savolda `{C1}` ga aylanadi, LLM
+SQLda `{C1_INNS}` deb yozadi, real STIRlar faqat shu mashinada, so'rov bajarilishidan oldin o'rniga qo'yiladi
+(`app/pseudonym.py`). Tovar nomlari niqoblanmaydi — ular TN VED kodlari, shaxsiy ma'lumot emas. Ma'lumotda
+mos kelmagan iboralar ham o'zgartirilmaydi: ular bizda saqlanadigan identifikator emas. Kafolatlar
+`tests/test_privacy.py` da tekshiriladi. Bu rejim ishlab chiqarish uchun to'liq lokal modelga o'tish yo'lidagi
+qadam ham: `OPENAI_BASE_URL` ni Ollama/vLLM ga yo'naltirish kifoya, kod o'zgarmaydi.
+
+**4.9. Testlar.**
+- `tests/` — 138 ta offline pytest (LLMsiz): normalizatsiya, SQL guard, verifier, entity resolution,
+  pseudonimizatsiya va shablon guard (`test_privacy.py`), reja JSONini tahlil qilish (`test_parse_json.py`),
+  agent oqimi soxta LLM bilan (`test_agent.py`), bot xabarlarini bo'lish, LLM zanjiri (soxta provayderlar
+  bilan), formatlash.
 - `tests/golden.jsonl` — 40 ta savol (20 uz / 20 ru; bitim, shartnoma, tovar, broker, eksport, nav/klass,
   top-N, 6 ta tuzoq) har biri uchun qo'lda yozilgan SQL va kutilgan raqamlar/satrlar.
   `tests/test_golden_offline.py` shu SQLlar hozirgi bazada kutilgan qiymatni berishini tekshiradi (regressiya).
@@ -159,6 +205,16 @@ Shu yugurishda ikki mantiqiy xato topildi va promptdagi qoidalar bilan tuzatildi
 `tests/report.md` tuzatishdan oldingi natijani ko'rsatadi (shuning uchun u yerda 16- va 12-savolda eski SQL
 turibdi); hisobot `.gitignore` da, chunki har yugurish LLM kvotasini sarflaydi.
 
+**B rejimi (bitta chaqiruv + shablon) bilan qayta yugurish.** 40 savollik golden to'plam (`scripts/golden_check.py`):
+**37/40 o'tdi**, vaqt 2.3–19 s, mediana ≈ 6 s (ikki chaqiruvli rejimda ≈ 10 s edi). Uchta xato:
+1. "O'rtacha narx" — oddiy o'rtacha (`AVG(unit_price)`) o'rniga vaznli (yoki aksincha) hisoblangan — talqin
+   masalasi. Qoida qo'shildi: ikkala o'rtacha ham qaytariladi.
+2. Shartnoma raqami bitim raqami sifatida o'qilgan. Qoida qo'shildi: "shartnoma / договор №" →
+   `contracts.contract_no`.
+3. Bitta savolda shablon guard rad etgani uchun umumiy "ustun: qiymat" ko'rinishi chiqdi — raqamlar to'g'ri,
+   lekin matn kutilgan satrga mos kelmadi.
+Uchala holatda ham javobdagi raqamlar bazadagi qatorlardan olingan edi; o'ylab topilgan qiymat bo'lmadi.
+
 ## 6. Cheklovlar (halol)
 
 - **Talqin noaniqligi.** "O'rtacha narx" oddiy o'rtacha (`AVG(unit_price)`) yoki vaznli
@@ -170,18 +226,24 @@ turibdi); hisobot `.gitignore` da, chunki har yugurish LLM kvotasini sarflaydi.
   viloyat bo'lishi mumkin. Ruscha nomni lotinga o'girishda `ц/щ` kabi harflar bir xil kalitga tushishi mumkin.
 - **Faqat ma'lumotdagi narsa.** Prognoz, sabab, kompaniya rahbari/telefoni, boshqa birjalar — javob yo'q.
   Davr: 2022-01-03 .. 2026-10-30 (kurs 2026-10-31 gacha).
-- **LLMga bog'liqlik.** SQL mantiqini LLM yozadi: verifier raqamning *mavjudligini* kafolatlaydi, lekin SQL
-  savolga mos kelishini emas — bu golden-test va "Talqin" qatori orqali nazorat qilinadi. 50 ta qatordan
-  ko'p natija qisqartiriladi (`truncated`), katta ro'yxatlar to'liq chiqmaydi.
-- **Vaqt.** LLM vendorlari sekinlashsa javob 30 s dan oshishi mumkin; byudjet tugasa foydalanuvchi qayta
+- **LLMga bog'liqlik.** SQL mantiqini LLM yozadi: shablon guard va verifier raqamning *mavjudligini*
+  kafolatlaydi, lekin SQL savolga mos kelishini emas — bu golden-test va "Talqin" qatori orqali nazorat
+  qilinadi. 50 ta qatordan ko'p natija qisqartiriladi (`truncated`), shablon ko'pi bilan 10 satr chiqaradi.
+- **Shablon ko'rmasdan yoziladi.** LLM qatorlarni ko'rmagani uchun shablon ba'zan natijaga "yopishmaydi"
+  (masalan, bir qator kutilgan joyda bir nechta chiqadi) — bunday holda javob to'g'ri, lekin quruqroq;
+  guard rad etsa umumiy "ustun: qiymat" ko'rinishi chiqadi.
+- **Pseudonimizatsiya chegarasi.** Faqat bazada mos kelgan nomlar niqoblanadi; bazada yo'q nom savol
+  matnida qoladi (bu bizda saqlanadigan identifikator emas). Tovar nomlari ataylab niqoblanmaydi.
+- **Vaqt.** LLM vendorlari sekinlashsa javob 20 s dan oshishi mumkin; byudjet tugasa foydalanuvchi qayta
   so'rashi kerak. Kontekst faqat oxirgi 2 savol ("va 2023-da?" kabi davom savollari uchun).
 
 ## 7. Texnologiyalar
 
 Python 3.12; SQLite (standart kutubxona, read-only URI, progress-handler timeout); aiogram 3 (Telegram, long
 polling); LLM zanjiri — google-genai (Gemini), anthropic (Claude Messages API), openai (shu jumladan har qanday
-OpenAI-mos endpoint: Groq, Ollama, OpenRouter); rapidfuzz (fuzzy entity matching); python-dotenv; pytest
-(124 offline test + 40 golden). Tashqi infratuzilma yo'q: bitta jarayon, bitta `.db` fayl (~335 MB).
+OpenAI-mos endpoint: Groq, Ollama, vLLM, OpenRouter — lokal model uchun `OPENAI_BASE_URL`); rapidfuzz (fuzzy
+entity matching); python-dotenv; pytest (138 offline test + 40 golden). Tashqi infratuzilma yo'q: bitta
+jarayon, bitta `.db` fayl (~335 MB).
 
 ---
 ---
@@ -196,11 +258,13 @@ OpenAI-mos endpoint: Groq, Ollama, OpenRouter); rapidfuzz (fuzzy entity matching
 Задача — отвечать на вопросы по 500 000 сделок, 6 616 контрактам, 14 392 участникам, 120 брокерам и дневному
 курсу доллара **точными числами, названиями и кодами**, а если ответа в данных нет — прямо это говорить. Самое
 жёсткое требование: выдуманное число, компания или товар = вылет из отбора. Поэтому подход построен на одном
-принципе: **LLM никогда не считает и никогда не «вспоминает» данные**. LLM только переводит вопрос в SQL и
-превращает строки, возвращённые SQLite, в текст. Каждое число, дата, код брокера и название компании в ответе
-проверяются кодом на наличие в строках результата; не прошедший проверку ответ переписывается или заменяется
-шаблоном. Под ответом пользователь видит, как понят вопрос, сколько строк найдено и какой SQL выполнен
-(блок «основание»).
+принципе: **LLM никогда не считает, не видит данные и не «вспоминает» их**. Один вызов LLM переводит вопрос
+в SQL и в *шаблон* ответа (текст со слотами `{колонка}`); SQLite считает, код заполняет шаблон строками. LLM
+вообще не видит строк результата, поэтому числа, названия, коды и даты попадают в текст ответа только из
+строк базы — выдумывать нечего. Названия компаний, ИНН и коды брокеров из вопроса заменяются на `{C1}`,
+`{INN1}`, `{B1}` до отправки в LLM («конфиденциальность на уровне конструкции»). Поверх этого готовый текст
+проходит grounding verifier. Под ответом пользователь видит, как понят вопрос, сколько строк найдено и какой
+SQL выполнен (блок «основание»).
 
 ## 2. Архитектура
 
@@ -216,8 +280,19 @@ OpenAI-mos endpoint: Groq, Ollama, OpenRouter); rapidfuzz (fuzzy entity matching
    брокер → BKxxx, номер сделки, ИНН; «не найдено» тоже сообщается
         │
         ▼
- План от LLM (app/agent.py, PLAN_SYSTEM) → JSON:
-   {language, answerable, reason, interpretation, sql}
+ Псевдонимизация — код (app/pseudonym.py)
+   название компании → {C1}, явный ИНН → {INN1}, код/имя брокера → {B1};
+   LLM получает только легенду: «{C1}: компания; найдено 2 участника»
+   (фразы, не найденные в данных, не трогаем — это не наши идентификаторы)
+        │
+        ▼
+ План от LLM — ОДИН вызов (app/agent.py, PLAN_SYSTEM + TEMPLATE_RULES) → JSON:
+   {language, answerable, reason, interpretation, sql,
+    render{headline, line, empty, note}}      ← SQL + шаблон ответа, без строк
+        │
+        ▼
+ Подстановка токенов — локально (Masked.substitute_sql)
+   {C1_INNS} → '9120…', '9158…';  {INN1} → '9537…';  {B1} → 'BK045';  {C1_KEY} → ckey(название)
         │
         ▼
  SQL guard (app/sql_guard.py)
@@ -225,26 +300,32 @@ OpenAI-mos endpoint: Groq, Ollama, OpenRouter); rapidfuzz (fuzzy entity matching
    таймаут 20 с, обязательный LIMIT 50       ──► ошибка возвращается LLM (≤3 попытки)
         │
         ▼
- Строки результата SQLite (data/uzex.db)
+ Строки результата SQLite (data/uzex.db)     ← LLM эти строки никогда не видит
         │
         ▼
- LLM пишет текст (ANSWER_SYSTEM): только значения из строк, на языке вопроса
+ Guard шаблона (app/render.py check_template)
+   литеральное число, которого нет в вопросе/SQL, или неизвестная колонка → отказ ──► LLM с пояснением (≤3 попытки)
         │
         ▼
- Grounding verifier (app/verify.py)
+ Заполнение шаблона — локально (app/render.py render)
+   {колонка} {колонка:t} {колонка:date} {row_count} {C1}; формат чисел, перевод единиц/валют/статусов,
+   ≤10 строк, 0 строк → текст «empty», «note» → допущения; негодный шаблон → общий вид «колонка: значение»
+        │
+        ▼
+ Grounding verifier (app/verify.py) — последний рубеж
    числа / коды BK / даты / названия компаний обязаны быть в строках или в вопросе
-        │ не прошло → LLM переписывает с пометкой «только значения из строк» (≤2 попытки)
-        │ снова нет → шаблон: строки как есть (app/agent.py _fallback_answer)
+        │ не прошло → общий вид «колонка: значение» (render_generic)
         ▼
  Ответ + блок «основание» (app/format.py): ✅ число строк · время · 🔎 как понят вопрос · ▸ SQL (свёрнут)
         │
         ▼
- logs/qa.jsonl — каждый вопрос: SQL, интерпретация, ответ, verified, время
+ logs/qa.jsonl — каждый вопрос: SQL, интерпретация, ответ, verified, used_template, время (только на этой машине)
 ```
 
-Бюджет времени: 50 с суммарно на вызовы LLM (`ANSWER_BUDGET_SEC`); после исчерпания новый вызов не
+Бюджет времени: 45 с суммарно на вызовы LLM (`ANSWER_BUDGET_SEC`); после исчерпания новый вызов не
 начинается, пользователю предлагается повторить вопрос. Каждый запрос к LLM ограничен 40 с, каждый SQL — 20 с;
-так обеспечивается жёсткий лимит 90 с.
+так обеспечивается жёсткий лимит 90 с. В штатном случае на вопрос уходит **один** вызов LLM (раньше два: SQL
+и текст); повторные вызовы — только при ошибке SQL или отказе guard шаблона.
 
 ## 3. Подготовка данных
 
@@ -282,42 +363,67 @@ OpenAI-mos endpoint: Groq, Ollama, OpenRouter); rapidfuzz (fuzzy entity matching
 
 ## 4. Как проверяются ответы
 
-**4.1. LLM не считает — считает SQLite.** Суммы, средние, топ-N, разницы дат — всё в SQL. Единственная
-разрешённая арифметика для LLM, пишущей текст: кг → тонны (÷1000), и тогда показываются оба значения.
-Проценты, суммирование, другие конвертации — запрещены (`ANSWER_SYSTEM`).
+**4.1. LLM не считает и не видит строк — считает SQLite, заполняет код.** Суммы, средние, топ-N, разницы
+дат — всё в SQL. LLM пишет не текст ответа, а **шаблон** (поле `render`): `headline` (1–2 предложения для
+первой/единственной строки), `line` (по строке на каждую запись, когда ожидается несколько), `empty` (что
+сказать при 0 строк), `note` (допущения). Слоты: `{колонка}`, `{колонка:t}` (кг → тонны, ÷1000 —
+единственная разрешённая арифметика, и выполняет её код), `{колонка:int}`, `{колонка:date}` (DD.MM.YYYY),
+`{row_count}`, `{C1}`/`{INN1}`/`{B1}`. `app/render.py` заполняет шаблон строками SQLite локально: форматирует
+числа (`1 234 567.89`), не группирует по тысячам колонки-идентификаторы (номер сделки, ИНН, год, код),
+для узбекского переводит единицы/валюты/статусы («тонна» → «tonna», «Узбекский сум» → «so'm», «Исполнен» →
+«Bajarilgan»), выводит не более 10 строк.
 
-**4.2. Grounding verifier** (`app/verify.py`, кодом для каждого ответа):
+**4.2. Guard шаблона** (`app/render.py: check_template`, кодом для каждого плана). Шаблон отклоняется, если в
+нём есть литеральное число, которого нет в вопросе или SQL (целые до 12 — «топ-5», «2 компании» — разрешены),
+используется колонка, которой нет в SELECT, или пусты и `headline`, и `line`. При отказе планирующей LLM
+отправляется повторный запрос со списком проблем и доступными колонками (всего 3 попытки); если и это не
+помогло — общий вид «колонка: значение» (`render_generic`): некрасиво, но верно.
+
+**4.3. Grounding verifier** (`app/verify.py`) — последний рубеж для готового текста; благодаря шаблону обычно
+не срабатывает, но сохранён:
 - Каждое число в ответе обязано совпадать с какой-то ячейкой строк результата (или быть её округлением до
   0–2 знаков; при словах «тыс/млн/млрд» — делением на этот масштаб; при «тонн» — ÷1000). Также разрешены
   литералы из вопроса и SQL (год, номер сделки, ИНН, ТН ВЭД) и число строк.
 - Коды брокеров `BKxxx` и даты (ISO или `DD.MM.YYYY`) обязаны быть в строках или в вопросе.
 - Названия компаний (в кавычках или оканчивающиеся на MChJ/OOO/AJ…) через `company_key` обязаны содержаться
   в какой-то текстовой ячейке строк.
-- Не прошло → LLM получает список отсутствующих значений и переписывает (2 попытки); снова нет → текст LLM
-  отбрасывается целиком, ответом становятся сами строки («Результат (напрямую из данных)»). Выдуманное число до
-  пользователя не доходит.
+- Не прошло → текст шаблона отбрасывается, ответом становятся сами строки («Результат (напрямую из данных)»).
+  Выдуманное число до пользователя не доходит.
 
-**4.3. Политика «данных нет».** Планирующая LLM ставит `answerable=false`, если вопрос вне периода (2021,
+**4.4. Политика «данных нет».** Планирующая LLM ставит `answerable=false`, если вопрос вне периода (2021,
 ноябрь 2026), о том, чего нет в схеме (директор, телефон, причины, прогнозы), о товаре вне списка (золото).
-Пустой результат (несуществующий номер сделки) тоже возвращается как «такой записи нет»; ни код, ни LLM не
-подставляют близкое значение. Если entity resolution не нашла названную компанию, она сообщает это LLM, и та не
-берёт похожую.
+Пустой результат (несуществующий номер сделки) возвращается текстом `empty` из шаблона («такой записи нет»);
+ни код, ни LLM не подставляют близкое значение. Если entity resolution не нашла названную компанию, легенда
+говорит «эта фраза не совпала ни с одним участником», и LLM не берёт похожую.
 
-**4.4. Допущения проговариваются.** `interpretation` в JSON плана — одно предложение на языке вопроса: период,
+**4.5. Допущения проговариваются.** `interpretation` в JSON плана — одно предложение на языке вопроса: период,
 товар (ТН ВЭД), исключены ли аннулированные, формула (объём = количество × лот). Оно показывается под ответом как
-«🔎 Как понят вопрос», SQL — в сворачиваемом блоке. Комиссия видит основание каждого ответа.
+«🔎 Как понят вопрос», SQL — в сворачиваемом блоке; `note` из шаблона — в конце ответа. Комиссия видит
+основание каждого ответа.
 
-**4.5. Безопасность SQL.** База открывается с `mode=ro`; один `SELECT`/`WITH`; `insert/update/delete/drop/
+**4.6. Безопасность SQL.** База открывается с `mode=ro`; один `SELECT`/`WITH`; `insert/update/delete/drop/
 attach/pragma/…` запрещены; без `LIMIT` добавляется 50; таймаут 20 с через progress-handler.
 
-**4.6. Время и надёжность.** 50 с бюджета на LLM, 40 с на запрос, 20 с на SQL — лимит 90 с не превышается.
+**4.7. Время и надёжность.** 45 с бюджета на LLM, 40 с на запрос, 20 с на SQL — лимит 90 с не превышается.
 Цепочка моделей `LLM_MODELS=gemini:…,anthropic:…,openai:…` — каждая модель 2 попытки (429/5xx/таймаут), затем
 следующая; при ошибке авторизации — сразу следующая. Отказ одного вендора бот переживает. Очередь на чат
 (asyncio.Lock), отдельное соединение с БД на вопрос — параллельные чаты не мешают друг другу.
 
-**4.7. Тесты.**
-- `tests/` — 124 офлайн-теста pytest (без LLM): нормализация, SQL guard, verifier, entity resolution,
-  разбиение сообщений бота, цепочка LLM (с фиктивными провайдерами), форматирование.
+**4.8. Конфиденциальность данных.** Что уходит с машины во внешнюю LLM: схема таблиц и правила
+(`app/schema_prompt.py`), замаскированный вопрос с легендой плейсхолдеров, интерпретации двух предыдущих
+вопросов, написанные самой LLM SQL и шаблон. Что не уходит никогда: исходные CSV/база, строки результата SQL,
+названия и ИНН участников, коды брокеров, названные пользователем, `logs/qa.jsonl`. Название компании в
+вопросе превращается в `{C1}`, LLM пишет в SQL `{C1_INNS}`, а реальные ИНН подставляются только на этой машине
+перед выполнением запроса (`app/pseudonym.py`). Названия товаров не маскируются — это коды ТН ВЭД, не
+персональные данные. Фразы, не найденные в данных, тоже не трогаются: это не идентификаторы, которые мы
+храним. Гарантии проверяются в `tests/test_privacy.py`. Этот режим — ещё и шаг к полностью локальной модели
+для продакшена: достаточно направить `OPENAI_BASE_URL` на Ollama/vLLM, код не меняется.
+
+**4.9. Тесты.**
+- `tests/` — 138 офлайн-тестов pytest (без LLM): нормализация, SQL guard, verifier, entity resolution,
+  псевдонимизация и guard шаблона (`test_privacy.py`), разбор JSON плана (`test_parse_json.py`), поток агента
+  с фиктивной LLM (`test_agent.py`), разбиение сообщений бота, цепочка LLM (с фиктивными провайдерами),
+  форматирование.
 - `tests/golden.jsonl` — 40 вопросов (20 uz / 20 ru; сделки, контракты, товары, брокеры, экспорт, сорт/класс,
   топ-N, 6 ловушек), для каждого — написанный вручную SQL и ожидаемые числа/строки.
   `tests/test_golden_offline.py` проверяет, что эти SQL на текущей базе дают ожидаемые значения (регрессия).
@@ -345,6 +451,16 @@ attach/pragma/…` запрещены; без `LIMIT` добавляется 50;
 `tests/report.md` показывает результат до исправления (поэтому в вопросах 16 и 12 там старый SQL); отчёт в
 `.gitignore`, так как каждый прогон расходует квоту LLM.
 
+**Повторный прогон в режиме B (один вызов + шаблон).** Golden-набор из 40 вопросов (`scripts/golden_check.py`):
+**37/40 пройдено**, время 2.3–19 с, медиана ≈ 6 с (в режиме с двумя вызовами было ≈ 10 с). Три промаха:
+1. «Средняя цена» — посчитана простая (`AVG(unit_price)`) вместо взвешенной (или наоборот) — вопрос
+   интерпретации. Добавлено правило: возвращать обе средние.
+2. Номер контракта прочитан как номер сделки. Добавлено правило: «shartnoma / договор №» →
+   `contracts.contract_no`.
+3. В одном вопросе guard шаблона отклонил шаблон, и ответ вышел в общем виде «колонка: значение» — числа верны,
+   но строка не совпала с ожидаемым текстом.
+Во всех трёх случаях числа в ответе были взяты из строк базы; выдуманных значений не было.
+
 ## 6. Ограничения (честно)
 
 - **Неоднозначность интерпретации.** «Средняя цена» может быть простой (`AVG(unit_price)`) или взвешенной
@@ -355,16 +471,21 @@ attach/pragma/…` запрещены; без `LIMIT` добавляется 50;
   областью. При транслитерации русских названий буквы вроде `ц/щ` могут давать одинаковый ключ.
 - **Только то, что есть в данных.** Прогнозы, причины, руководитель/телефон компании, другие биржи — ответа
   нет. Период: 2022-01-03 .. 2026-10-30 (курс до 2026-10-31).
-- **Зависимость от LLM.** Логику SQL пишет LLM: verifier гарантирует *наличие* числа в данных, но не
-  соответствие SQL вопросу — это контролируется golden-тестами и строкой «Как понят вопрос». Результаты длиннее
-  50 строк усекаются (`truncated`), большие списки выводятся не полностью.
-- **Время.** При замедлении вендоров ответ может превысить 30 с; при исчерпании бюджета пользователю нужно
+- **Зависимость от LLM.** Логику SQL пишет LLM: guard шаблона и verifier гарантируют *наличие* числа в
+  данных, но не соответствие SQL вопросу — это контролируется golden-тестами и строкой «Как понят вопрос».
+  Результаты длиннее 50 строк усекаются (`truncated`), шаблон выводит не более 10 строк.
+- **Шаблон пишется вслепую.** LLM не видит строк, поэтому шаблон иногда «не ложится» на результат (например,
+  ожидалась одна строка, а вернулось несколько) — ответ тогда верный, но суше; при отказе guard выводится общий
+  вид «колонка: значение».
+- **Границы псевдонимизации.** Маскируются только названия, найденные в базе; не найденное название остаётся в
+  тексте вопроса (это не хранимый нами идентификатор). Названия товаров намеренно не маскируются.
+- **Время.** При замедлении вендоров ответ может превысить 20 с; при исчерпании бюджета пользователю нужно
   повторить вопрос. Контекст — только последние 2 вопроса (для уточнений вида «а в 2023?»).
 
 ## 7. Технологии
 
 Python 3.12; SQLite (стандартная библиотека, read-only URI, таймаут через progress-handler); aiogram 3
 (Telegram, long polling); цепочка LLM — google-genai (Gemini), anthropic (Claude Messages API), openai (включая
-любой OpenAI-совместимый endpoint: Groq, Ollama, OpenRouter); rapidfuzz (fuzzy-сопоставление сущностей);
-python-dotenv; pytest (124 офлайн-теста + 40 golden). Внешней инфраструктуры нет: один процесс, один файл `.db`
-(~335 МБ).
+любой OpenAI-совместимый endpoint: Groq, Ollama, vLLM, OpenRouter — `OPENAI_BASE_URL` для локальной модели);
+rapidfuzz (fuzzy-сопоставление сущностей); python-dotenv; pytest (138 офлайн-тестов + 40 golden). Внешней
+инфраструктуры нет: один процесс, один файл `.db` (~335 МБ).
