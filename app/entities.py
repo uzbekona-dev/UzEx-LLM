@@ -70,7 +70,7 @@ class Resolution:
         if self.brokers:
             lines.append("- brokers: " + ", ".join(self.brokers))
         if self.deal_nos:
-            lines.append("- deal numbers: " + ", ".join(str(n) for n in self.deal_nos))
+            lines.append("- 6+ digit numbers (deal OR contract number, decide from the wording): " + ", ".join(str(n) for n in self.deal_nos))
         for phrase in self.unmatched_phrases:
             lines.append(f"- company phrase '{phrase}' matched no participant")
         return "\n".join(lines)
@@ -268,6 +268,15 @@ class EntityResolver:
         companies.sort(key=lambda c: (-c.score, c.inn))
         return Resolution(products=resolve_products(question), companies=companies, brokers=_unique(brokers),
                           inns=inns, deal_nos=deal_nos, unmatched_phrases=unmatched)
+
+    def match_phrase(self, phrase: str) -> tuple[str, list[CompanyHit] | str | None]:
+        """Classify one name phrase: ('broker', 'BK045') | ('companies', [hits]) | ('none', None)."""
+        key = company_key(phrase)
+        broker = self._match_broker(key)
+        if broker:
+            return "broker", broker
+        hits = self._match_companies(key)
+        return ("companies", hits) if hits else ("none", None)
 
     # -- private
     def _match_broker(self, key: str) -> str | None:

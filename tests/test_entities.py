@@ -109,7 +109,7 @@ def test_deal_number_vs_inn(resolver: EntityResolver) -> None:
     res = resolver.resolve("Bitim 100001 va 915861525 haqida")
     assert res.deal_nos == [100001]
     assert res.inns == ["915861525"]
-    assert "- deal numbers: 100001" in res.prompt_block()
+    assert "100001" in res.prompt_block() and "deal OR contract" in res.prompt_block()
 
 
 # --------------------------------------------------------------------------- prompt block / perf

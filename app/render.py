@@ -1,0 +1,166 @@
+"""Fill the LLM-written answer template with query rows — the only place numbers enter the text.
+
+Template language (written by the planner, filled here):
+  {col}         value of a result column (numbers formatted with thin spaces, max 2 decimals)
+  {col:t}       kilograms -> tonnes (÷ 1000)       {col:int}  no decimals      {col:date}  DD.MM.YYYY
+  {row_count}   number of rows                      {C1} {B1} {INN1}  entity placeholders (unmasked by caller)
+Blocks: headline (uses the first row), line (one per row, max 10), empty (no rows), note (assumptions).
+"""
+
+from __future__ import annotations
+
+import re
+from dataclasses import dataclass, field
+
+from app.dictionaries import CONTRACT_FORMS, CONTRACT_TYPES, CURRENCIES, DEAL_STATUSES, TRADE_TYPES, UNITS
+from app.verify import extract_numbers
+
+MAX_LINES = 10
+THIN = " "
+_PLACEHOLDER_RE = re.compile(r"\{([A-Za-z_][\w]*)(?::(t|int|date|raw))?\}")
+_ENTITY_RE = re.compile(r"^(C\d+|B\d+|INN\d+)$")
+
+_UZ_SHORT_STATUS = {k: v.split(" (")[0].split(" —")[0] for k, v in DEAL_STATUSES.items()}
+_UZ_LABELS = {**UNITS, **CURRENCIES, **_UZ_SHORT_STATUS, **CONTRACT_TYPES, **CONTRACT_FORMS,
+              **{k: v.split(" (")[0] for k, v in TRADE_TYPES.items()},
+              "килограмм": "kg", "Узбекский сум": "so'm", "Продавец": "Sotuvchi", "Покупатель": "Xaridor"}
+_RU_LABELS = {"Узбекский сум": "сум", "Доллар США": "долл. США", "тонна": "т", "килограмм": "кг"}
+_ID_COLUMN_RE = re.compile(r"(^|_)(no|num|number|inn|code|year|month|day|tnved|id)$", re.I)
+
+
+class TemplateError(ValueError):
+    pass
+
+
+@dataclass(frozen=True)
+class RenderSpec:
+    headline: str = ""
+    line: str = ""
+    empty: str = ""
+    note: str = ""
+
+    @classmethod
+    def from_plan(cls, raw: object) -> "RenderSpec":
+        if not isinstance(raw, dict):
+            return cls()
+        return cls(**{k: str(raw.get(k) or "") for k in ("headline", "line", "empty", "note")})
+
+    def texts(self) -> list[str]:
+        return [t for t in (self.headline, self.line, self.empty, self.note) if t]
+
+
+@dataclass(frozen=True)
+class Rendered:
+    text: str
+    used_template: bool
+    problems: list[str] = field(default_factory=list)
+
+
+# ----------------------------------------------------------------------------- formatting
+def format_number(value: float | int, *, decimals: int | None = None) -> str:
+    if isinstance(value, bool):
+        return str(value)
+    if decimals is None:
+        decimals = 0 if float(value).is_integer() else 2
+    text = f"{value:,.{decimals}f}".replace(",", THIN)
+    if decimals and "." in text:
+        text = text.rstrip("0").rstrip(".")
+    return text
+
+
+def format_date(value: str) -> str:
+    m = re.match(r"^(\d{4})-(\d{2})-(\d{2})", str(value))
+    return f"{m.group(3)}.{m.group(2)}.{m.group(1)}" if m else str(value)
+
+
+def format_value(value: object, modifier: str | None, lang: str, column: str = "") -> str:
+    if value is None:
+        return "—"
+    if modifier == "raw" or (modifier is None and _ID_COLUMN_RE.search(column) and not isinstance(value, str)):
+        return str(int(value)) if isinstance(value, float) and value.is_integer() else str(value)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        if modifier == "t":
+            return format_number(value / 1000)
+        if modifier == "int":
+            return format_number(round(value), decimals=0)
+        return format_number(value)
+    text = str(value)
+    if modifier == "date":
+        return format_date(text)
+    if lang == "uz":
+        return _UZ_LABELS.get(text, text)
+    return _RU_LABELS.get(text, text)
+
+
+# ----------------------------------------------------------------------------- guard
+def check_template(spec: RenderSpec, columns: list[str], context: str) -> list[str]:
+    """Reject templates that smuggle values in: unknown columns, digits not in the question/SQL."""
+    problems: list[str] = []
+    allowed_numbers = set(extract_numbers(context))
+    known = set(columns) | {"row_count"}
+    for text in spec.texts():
+        for m in _PLACEHOLDER_RE.finditer(text):
+            name = m.group(1)
+            if name not in known and not _ENTITY_RE.match(name):
+                problems.append(f"unknown column {{{name}}}")
+        stripped = _PLACEHOLDER_RE.sub(" ", text)
+        for value in extract_numbers(stripped):
+            if value <= 12 and value.is_integer():
+                continue
+            if value not in allowed_numbers:
+                problems.append(f"literal number {value:g} in template")
+    if not spec.headline and not spec.line:
+        problems.append("template has neither headline nor line")
+    return problems
+
+
+# ----------------------------------------------------------------------------- rendering
+def _fill(template: str, row: dict, row_count: int, lang: str) -> str:
+    def repl(m: re.Match) -> str:
+        name, modifier = m.group(1), m.group(2)
+        if name == "row_count":
+            return format_number(row_count, decimals=0)
+        if _ENTITY_RE.match(name):
+            return m.group(0)  # unmasked later by the caller
+        if name not in row:
+            raise TemplateError(f"unknown column {name}")
+        return format_value(row[name], modifier, lang, name)
+    return _PLACEHOLDER_RE.sub(repl, template)
+
+
+def render_template(spec: RenderSpec, columns: list[str], rows: list[tuple], lang: str) -> str:
+    records = [dict(zip(columns, r)) for r in rows]
+    if not records:
+        return spec.empty or ("Ma'lumotlarda mos yozuv topilmadi." if lang == "uz" else "В данных подходящих записей нет.")
+    parts: list[str] = []
+    if spec.headline:
+        parts.append(_fill(spec.headline, records[0], len(records), lang))
+    if spec.line and (len(records) > 1 or not spec.headline):
+        parts.extend(_fill(spec.line, rec, len(records), lang) for rec in records[:MAX_LINES])
+        if len(records) > MAX_LINES:
+            parts.append("…" if lang == "uz" else "…")
+    if spec.note:
+        parts.append("")
+        parts.append(_fill(spec.note, records[0], len(records), lang))
+    return "\n".join(parts).strip()
+
+
+def render_generic(columns: list[str], rows: list[tuple], lang: str) -> str:
+    """Column: value listing used when the template is unusable — plain but never wrong."""
+    if not rows:
+        return "Ma'lumotlarda mos yozuv topilmadi." if lang == "uz" else "В данных подходящих записей нет."
+    head = "Natija (ma'lumotlardan to'g'ridan-to'g'ri):" if lang == "uz" else "Результат (напрямую из данных):"
+    lines = [head]
+    for row in rows[:MAX_LINES]:
+        lines.append("; ".join(f"{c}: {format_value(v, None, lang, c)}" for c, v in zip(columns, row)))
+    return "\n".join(lines)
+
+
+def render(spec: RenderSpec, columns: list[str], rows: list[tuple], lang: str, context: str) -> Rendered:
+    problems = check_template(spec, columns, context)
+    if problems:
+        return Rendered(render_generic(columns, rows, lang), False, problems)
+    try:
+        return Rendered(render_template(spec, columns, rows, lang), True)
+    except TemplateError as exc:
+        return Rendered(render_generic(columns, rows, lang), False, [str(exc)])

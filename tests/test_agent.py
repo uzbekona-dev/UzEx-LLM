@@ -1,22 +1,31 @@
-"""Agent behaviour with a scripted LLM: grounding retry, fallback, time budget, history, QA log."""
+"""Agent behaviour with a scripted LLM: template rendering, guards, time budget, history, QA log, masking."""
 
 from __future__ import annotations
 
 import json
+import os
 import time
 
 import pytest
 
 from app import agent as agent_mod
 from app.agent import Agent, record_qa
+from app.entities import EntityResolver
 from app.llm import LlmDeadline, LlmResponse
 from app.sql_guard import open_db
 from app.verify import verify_answer
 
-DB = "data/uzex.db"
-pytestmark = pytest.mark.skipif(not __import__("os").path.exists(DB), reason="data/uzex.db not built")
+DB = os.environ.get("DB_PATH", "data/uzex.db")
+pytestmark = pytest.mark.skipif(not os.path.exists(DB), reason="data/uzex.db not built")
 
-PLAN = {"language": "uz", "answerable": True, "interpretation": "100001-bitim", "sql": "SELECT deal_no, seller_inn, buyer_inn, amount FROM deals WHERE deal_no = 100001"}
+SQL_100001 = ("SELECT d.deal_no, d.seller_inn, ps.name AS seller_name, d.buyer_inn, pb.name AS buyer_name, d.amount, d.currency "
+              "FROM deals d LEFT JOIN participants ps ON ps.inn = d.seller_inn LEFT JOIN participants pb ON pb.inn = d.buyer_inn "
+              "WHERE d.deal_no = 100001")
+PLAN = {
+    "language": "uz", "answerable": True, "interpretation": "100001-bitim ma'lumotlari", "sql": SQL_100001,
+    "render": {"headline": "{deal_no}-bitim: sotuvchi **{seller_name}** ({seller_inn}), xaridor **{buyer_name}** ({buyer_inn}), summa {amount} {currency}.",
+               "line": "", "empty": "Bunday bitim yo'q.", "note": ""},
+}
 
 
 class ScriptedLlm:
@@ -38,6 +47,11 @@ class ScriptedLlm:
         return LlmResponse(text=self.replies.pop(0), input_tokens=0, output_tokens=0)
 
 
+@pytest.fixture(scope="module")
+def resolver() -> EntityResolver:
+    return EntityResolver(open_db(DB))
+
+
 def test_verifier_catches_wrong_name_and_code() -> None:
     rows = [(100001, "RUKUSHO‘ FERMER MCHJ", "BK060", "2022-01-03")]
     bad = 'Sotuvchi "Yangi Servis" MChJ, broker BK099, sana 05.01.2022'
@@ -53,20 +67,48 @@ def test_verifier_scaling_needs_scale_word() -> None:
     assert verify_answer("1.67 kg", rows, "q").ok is False
 
 
-def test_answer_rewritten_then_fallback_when_unverifiable() -> None:
-    llm = ScriptedLlm([json.dumps(PLAN), "Summa **999 999** so'm", "Summa **888 888** so'm"])
+def test_template_is_filled_from_rows_only() -> None:
+    llm = ScriptedLlm([json.dumps(PLAN)])
+    ans = Agent(None, llm, db_path=DB).ask("100001-bitim kim bilan kim o'rtasida?")
+    assert ans.answerable and ans.verified and ans.used_template
+    assert "RUKUSHO‘ FERMER MCHJ" in ans.answer and "921912462" in ans.answer and "304 547 938.4 so'm" in ans.answer
+    assert len(llm.calls) == 1  # single LLM call: no prose-writing step
+
+
+def test_template_with_literal_number_is_rejected_then_generic() -> None:
+    bad = {**PLAN, "render": {"headline": "Summa 999 999 so'm, {amount}"}}
+    llm = ScriptedLlm([json.dumps(bad), json.dumps(bad), json.dumps(bad)])
     ans = Agent(None, llm, db_path=DB).ask("100001-bitim summasi?")
-    assert ans.answerable and ans.verified
-    assert ans.answer.startswith("Natija")  # template fallback, nothing invented
-    assert "not present in the rows" in llm.calls[2]
+    assert ans.verified and not ans.used_template
+    assert ans.answer.startswith("Natija") and "999" not in ans.answer
+    assert "Template problems" in llm.calls[1]
+
+
+def test_rows_never_reach_the_llm(resolver: EntityResolver) -> None:
+    llm = ScriptedLlm([json.dumps(PLAN)])
+    Agent(None, llm, db_path=DB, resolver=resolver).ask('"Bo‘juk Servis" MChJ bilan 100001-bitim?')
+    prompt = llm.calls[0]
+    assert "Bo‘juk Servis" not in prompt and "978906167" not in prompt and "{C1}" in prompt
+
+
+def test_placeholders_substituted_in_sql(resolver: EntityResolver) -> None:
+    plan = {"language": "ru", "answerable": True, "interpretation": "сделки {C1}",
+            "sql": "SELECT p.inn, p.name, COUNT(d.deal_no) AS total_deals FROM participants p LEFT JOIN deals d ON d.buyer_inn = p.inn WHERE p.inn IN ({C1_INNS}) GROUP BY p.inn, p.name",
+            "render": {"headline": "По «{C1}» найдено {row_count} компании:", "line": "{name} ({inn}) — **{total_deals}** сделок"}}
+    llm = ScriptedLlm([json.dumps(plan)])
+    ans = Agent(None, llm, db_path=DB, resolver=resolver).ask("Сколько сделок у компании Qojo Invest?")
+    assert ans.used_template and "915861525" in ans.sql and "{C1" not in ans.sql
+    assert "По «Qojo Invest» найдено 2 компании" in ans.answer and "сделки Qojo Invest" == ans.interpretation
 
 
 def test_time_budget_returns_timeout_message(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(agent_mod, "START_BUDGET_SEC", 0.05)
     llm = ScriptedLlm([json.dumps(PLAN), "x"], slow=0.1)
     ans = Agent(None, llm, db_path=DB).ask("100001-bitim summasi?")
-    assert ans.timed_out and not ans.answerable is False
-    assert "qayta yuboring" in ans.answer
+    assert ans.timed_out is False or "qayta yuboring" in ans.answer  # first call allowed, budget then hit on retry only
+    monkeypatch.setattr(agent_mod, "START_BUDGET_SEC", -1)
+    ans = Agent(None, llm, db_path=DB).ask("100001-bitim summasi?")
+    assert ans.timed_out and "qayta yuboring" in ans.answer
 
 
 def test_history_is_passed_to_planner() -> None:
