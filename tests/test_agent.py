@@ -47,6 +47,11 @@ class ScriptedLlm:
         return LlmResponse(text=self.replies.pop(0), input_tokens=0, output_tokens=0)
 
 
+@pytest.fixture(autouse=True)
+def no_critic(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent_mod, "SQL_CRITIC", False)  # scripted replies below do not include a critic verdict
+
+
 @pytest.fixture(scope="module")
 def resolver() -> EntityResolver:
     return EntityResolver(open_db(DB))
@@ -124,3 +129,16 @@ def test_record_qa_writes_jsonl(tmp_path) -> None:
     record_qa(ans, {"chat_id": 1}, path=str(path))
     entry = json.loads(path.read_text(encoding="utf-8").splitlines()[0])
     assert entry["question"] == "direktor kim?" and entry["answerable"] is False and entry["chat_id"] == 1
+
+
+def test_critic_fix_is_applied_only_when_it_runs_with_same_columns(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(agent_mod, "SQL_CRITIC", True)
+    fixed = SQL_100001.replace("d.deal_no = 100001", "d.deal_no = 100001 AND d.is_cancelled = 0")
+    verdict = {"ok": False, "issues": ["x"], "fixed_sql": fixed, "interpretation": "tuzatilgan talqin"}
+    llm = ScriptedLlm([json.dumps(PLAN), json.dumps(verdict)])
+    ans = Agent(None, llm, db_path=DB).ask("100001-bitim?")
+    assert "is_cancelled = 0" in ans.sql and ans.interpretation == "tuzatilgan talqin" and ans.used_template
+    bad_verdict = {"ok": False, "fixed_sql": "SELECT 1 AS other_col"}
+    llm = ScriptedLlm([json.dumps(PLAN), json.dumps(bad_verdict)])
+    ans = Agent(None, llm, db_path=DB).ask("100001-bitim?")
+    assert "other_col" not in ans.sql and ans.used_template  # rejected: different columns

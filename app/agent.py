@@ -34,6 +34,19 @@ log = logging.getLogger(__name__)
 MAX_SQL_ATTEMPTS = 3
 START_BUDGET_SEC = float(os.environ.get("ANSWER_BUDGET_SEC", "45"))  # no new LLM call after this (+40 s call timeout < 90 s)
 HISTORY_TURNS = 2
+SQL_CRITIC = os.environ.get("SQL_CRITIC", "1") not in ("0", "false", "no")
+
+CRITIC_SYSTEM = f"""You review ONE SQLite query written for a question about exchange deals. You do not see data.
+{SCHEMA_DOC}
+Check ONLY these points and answer with JSON {{"ok": true|false, "issues": ["..."], "fixed_sql": "<full corrected SQL or empty>", "interpretation": "<corrected one-sentence interpretation in the question's language, or empty>"}}:
+1. "sold / traded / volume / turnover" questions must have is_cancelled = 0; "how many deals" (count) must NOT filter cancelled unless asked. All aggregates in one query use the same cancelled filter.
+2. Volumes summed only within one unit (GROUP BY unit); amounts only in one currency (amount_uzs or GROUP BY currency).
+3. A broker is counted once per deal (COUNT(DISTINCT deal_no) / UNION, never UNION ALL) and on both sides unless a side is named.
+4. deals.region is the SELLER warehouse region; a buyer's region must come from participants.region joined on buyer_inn.
+5. Period: year/month columns or deal_date match the question; relative periods are relative to 2026-10-30; a number after shartnoma/договор is contracts.contract_no, after bitim/сделка it is deals.deal_no.
+6. Product filtered by tnved; grade/class via sort_no/class_no when asked; "average price" returns both AVG(unit_price) and SUM(amount)/SUM(volume).
+7. Placeholders {{C1_INNS}} {{INN1}} {{B1}} must stay exactly as written.
+If the SQL is acceptable, return ok=true and empty fixed_sql. If you fix it, keep the SAME column aliases (the answer template depends on them) and keep it a single SELECT with LIMIT."""
 QA_LOG_PATH = os.environ.get("QA_LOG", "logs/qa.jsonl")
 
 TEMPLATE_RULES = """
@@ -273,8 +286,33 @@ class Agent:
                 feedback = f"Template problems: {problems}. Columns available: {result.columns}. Use only slots, no literal values."
                 debug.append(feedback)
                 continue
+            if SQL_CRITIC:
+                plan, result = self._criticise(con, masked, plan, result, deadline, debug)
             return plan, result, spec
         return plan, QueryResult(sql=plan.get("sql", ""), columns=[], rows=[], elapsed_sec=0, error="gave up"), spec
+
+    def _criticise(self, con: sqlite3.Connection, masked: Masked | _NullMasked, plan: dict, result: QueryResult,
+                   deadline: float, debug: list[str]) -> tuple[dict, QueryResult]:
+        """Second opinion on the SQL logic only; a fix is accepted only if it runs and keeps the column aliases."""
+        user = (f"QUESTION: {masked.question}\nINTERPRETATION: {plan.get('interpretation', '')}\n"
+                f"SQL:\n{plan['sql']}\nRESULT COLUMNS: {result.columns}  ROWS RETURNED: {len(result.rows)}")
+        try:
+            verdict = _parse_json(self.llm.complete(CRITIC_SYSTEM, user, json_mode=True, deadline=deadline).text)
+        except (PlanError, LlmDeadline) as exc:
+            debug.append(f"critic skipped: {exc}")
+            return plan, result
+        debug.append(f"critic: {json.dumps(verdict, ensure_ascii=False)[:600]}")
+        fixed = str(verdict.get("fixed_sql") or "").strip()
+        if verdict.get("ok", True) or not fixed or fixed == plan["sql"]:
+            return plan, result
+        new_result = run_query(con, masked.substitute_sql(fixed))
+        if not new_result.ok or set(new_result.columns) != set(result.columns):
+            debug.append("critic fix rejected (error or different columns)")
+            return plan, result
+        new_plan = {**plan, "sql": fixed}
+        if verdict.get("interpretation"):
+            new_plan["interpretation"] = str(verdict["interpretation"])
+        return new_plan, new_result
 
     # -- main entry ---------------------------------------------------------------------------
     def ask(self, question: str, history: list[Turn] | None = None) -> AgentAnswer:
