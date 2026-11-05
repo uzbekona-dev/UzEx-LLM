@@ -13,7 +13,7 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import BotCommand, KeyboardButton, Message, ReplyKeyboardMarkup
+from aiogram.types import BotCommand, Message, ReplyKeyboardRemove
 from aiogram.utils.chat_action import ChatActionSender
 from dotenv import load_dotenv
 
@@ -39,7 +39,7 @@ WELCOME = (
     "• Kompaniya (nomi yoki STIR) va brokerlar statistikasi\n"
     "• Dollar kursi, bekor qilingan va kechikkan bitimlar\n\n"
     "<b>Qanday sinash</b>\n"
-    "1. Pastdagi tugmani bosing yoki savolni o'zingiz yozing (uz / ru)\n"
+    "1. Savolni o'zbek yoki rus tilida yozing (misollar: /examples)\n"
     "2. 5–30 soniya kuting — javob ostida ✅ asos va ▸ SQL ko'rinadi\n"
     "3. Ma'lumotda yo'q narsani so'rab ko'ring — «javob yo'q» deyman, o'ylab topmayman\n\n"
     "🤖 <b>AI-ассистент по биржевым сделкам UZEX</b>\n"
@@ -50,7 +50,7 @@ WELCOME = (
     "• Статистика по компании (название или ИНН) и брокерам\n"
     "• Курс доллара, аннулированные и просроченные сделки\n\n"
     "<b>Как проверить</b>\n"
-    "1. Нажмите кнопку ниже или напишите свой вопрос (uz / ru)\n"
+    "1. Напишите вопрос на узбекском или русском (примеры: /examples)\n"
     "2. Подождите 5–30 секунд — под ответом будут ✅ основание и ▸ SQL\n"
     "3. Спросите то, чего нет в данных — скажу «ответа нет», ничего не придумаю"
 )
@@ -73,7 +73,6 @@ EXAMPLES = [
     "15.06.2024 dollar kursi",
     "Сделки компании Qojo Invest",
 ]
-KEYBOARD_COLUMNS = 2
 PROGRESS = "⏳ Ma'lumotlarni qidiryapman… / Ищу в данных… (5–30 s)"
 ERROR_MSG = (
     "⚠️ Texnik xatolik yuz berdi, iltimos bir ozdan keyin qayta urinib ko'ring.\n"
@@ -86,12 +85,6 @@ COMMANDS = [
 ]
 
 router = Router(name="main")
-
-
-def examples_keyboard() -> ReplyKeyboardMarkup:
-    buttons = [KeyboardButton(text=q) for q in EXAMPLES]
-    rows = [buttons[i:i + KEYBOARD_COLUMNS] for i in range(0, len(buttons), KEYBOARD_COLUMNS)]
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, input_field_placeholder="Savol / Вопрос…")
 
 
 def split_message(text: str, limit: int = TELEGRAM_MESSAGE_LIMIT) -> list[str]:
@@ -145,18 +138,18 @@ class ChatLocks:
 @router.message(Command("start"))
 async def on_start(message: Message, chat_history: ChatHistory) -> None:
     chat_history.clear(message.chat.id)
-    await message.answer(WELCOME, reply_markup=examples_keyboard())
+    await message.answer(WELCOME, reply_markup=ReplyKeyboardRemove())  # also clears the old example-button keyboard
 
 
 @router.message(Command("help"))
 async def on_help(message: Message) -> None:
-    await message.answer(HELP, reply_markup=examples_keyboard())
+    await message.answer(HELP, reply_markup=ReplyKeyboardRemove())
 
 
 @router.message(Command("examples"))
 async def on_examples(message: Message) -> None:
     text = "\n".join(f"• {q}" for q in EXAMPLES)
-    await message.answer(text, reply_markup=examples_keyboard(), parse_mode=None)
+    await message.answer(text, reply_markup=ReplyKeyboardRemove(), parse_mode=None)
 
 
 @router.message(F.text)
