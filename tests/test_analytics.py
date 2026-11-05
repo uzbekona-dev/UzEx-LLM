@@ -30,9 +30,9 @@ def test_product_report_figures(con) -> None:
     cancelled = _one(con, "SELECT COUNT(*) FROM deals WHERE tnved = '520100' AND year = 2024 AND is_cancelled = 1")
     volume = _one(con, "SELECT SUM(volume) FROM deals WHERE tnved = '520100' AND year = 2024 AND is_cancelled = 0")
     assert f"2024: **{format_number(total)}** bitim (bekor {format_number(cancelled)}) · {format_number(volume)} kg" in text
-    top = con.execute("SELECT seller_inn, SUM(volume) v FROM deals WHERE tnved = '520100' AND is_cancelled = 0 "
-                      "GROUP BY seller_inn ORDER BY v DESC LIMIT 1").fetchone()
-    assert f"({top[0]}) — **{format_number(top[1])}** kg" in text
+    top = con.execute("SELECT seller_inn, SUM(amount_uzs) s FROM deals WHERE tnved = '520100' AND is_cancelled = 0 "
+                      "GROUP BY seller_inn ORDER BY s DESC LIMIT 1").fetchone()
+    assert f"({top[0]}) — **{format_number(round(top[1]))}** so'm" in text  # ranked by amount, whole so'm
     assert text.startswith("📊 **Paxta xomashyosi** (TN VED 520100)")
 
 
@@ -68,9 +68,9 @@ def test_cyrillic_labels_keep_data_values(con) -> None:
 
 
 def test_unknown_entities_say_so(con) -> None:
-    assert an.product_report(con, "000000", "uz") == "Bu obyekt bo'yicha bitimlar topilmadi."
+    assert an.product_report(con, "000000", "uz") == "Bu bo'yicha bitimlar topilmadi."
     assert an.company_report(con, "000000000", "ru") == "По этому объекту сделок не найдено."
-    assert an.broker_report(con, "BK999", "uz") == "Bu obyekt bo'yicha bitimlar topilmadi."
+    assert an.broker_report(con, "BK999", "uz") == "Bu bo'yicha bitimlar topilmadi."
 
 
 def test_callback_roundtrip_and_size() -> None:
@@ -97,3 +97,20 @@ def test_button_titles_follow_language() -> None:
     assert an.pick_targets(res, "ru")[0].title == "Хлопок-сырец"
     assert an.pick_targets(res, "uz_cyr")[0].title == "Пахта хомашёси"
     assert an.pick_targets(res, "uz")[0].title == "Paxta xomashyosi"
+
+
+def test_multi_unit_product_never_adds_units(con) -> None:
+    text = an.product_report(con, "271019", "uz")  # diesel: kilograms and tonnes
+    line_2024 = next(l for l in text.splitlines() if l.startswith("2024:"))
+    assert " kg + " in line_2024 or " tonna + " in line_2024
+    assert "o'rtacha" not in line_2024  # no average price across two units
+    total = _one(con, "SELECT COUNT(*) FROM deals WHERE tnved = '271019' AND year = 2024")
+    assert line_2024.startswith(f"2024: **{format_number(total)}** bitim")
+    assert sum(1 for l in text.splitlines() if l.startswith("2024:")) == 1
+
+
+def test_sums_are_whole_and_cyrillic_header(con) -> None:
+    text = an.overview_report(DB, "uz")
+    assert not any(ch == "." for l in text.splitlines() if "so'm" in l for ch in l.split("so'm")[0][-4:])
+    assert "(СТИР 915861525)" in an.company_report(con, "915861525", "uz_cyr")
+    assert "(ТН ВЭД 520100)" in an.product_report(con, "520100", "uz_cyr")

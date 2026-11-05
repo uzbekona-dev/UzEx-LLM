@@ -25,7 +25,7 @@ _T = {
         "top_products": "Top tovarlar", "top_brokers": "Brokerlar", "top_clients": "Top mijozlar",
         "as_seller": "sotuvchi", "as_buyer": "xaridor", "region": "Hudud", "role": "Roli", "activity": "Faoliyati",
         "footer": "Manba: birja bitimlari bazasi (03.01.2022–30.10.2026). Hajm, summa va narxga bekor qilingan bitimlar kiritilmagan.",
-        "overview": "Birja bitimlari: umumiy statistika", "total": "Jami", "none": "Bu obyekt bo'yicha bitimlar topilmadi.",
+        "overview": "Birja bitimlari: umumiy statistika", "total": "Jami", "none": "Bu bo'yicha bitimlar topilmadi.",
         "per": "so'm/",
     },
     "ru": {
@@ -98,15 +98,27 @@ def report(con: sqlite3.Connection, target: Target, lang: str) -> str:
     return broker_report(con, target.key, lang)
 
 
-def _year_lines(rows: list[tuple], lang: str, L: dict[str, str]) -> list[str]:
-    """rows: year, unit, deals_total, cancelled, volume, amount_uzs."""
+def _sum(value: float | None) -> str:
+    """So'm totals are shown in whole so'm: tiyin digits on trillions are noise that depends on summation order."""
+    return _n(round(value or 0))
+
+
+def _year_lines(years: list[tuple], volumes: dict, lang: str, L: dict[str, str]) -> list[str]:
+    """years: year, deals_total, cancelled, amount_uzs; volumes: year -> [(unit, volume, amount)] (non-cancelled).
+
+    One line per year. Units are never added together; the average price is shown only when the year
+    has a single unit (so'm per that unit)."""
     out = []
-    for year, unit, total, cancelled, volume, amount in rows:
+    for year, total, cancelled, amount in years:
         line = f"{year}: **{_n(total)}** {L['deals']} ({L['cancelled']} {_n(cancelled)})"
-        if volume:
-            line += f" · {_n(volume)} {_unit(unit, lang)}"
-            if amount:
-                line += f" · {_n(amount)} {L['amount']} · {L['avg']} {_n(amount / volume)} {L['per']}{_unit(unit, lang)}"
+        per_unit = volumes.get(year, [])
+        if per_unit:
+            line += " · " + " + ".join(f"{_n(v)} {_unit(u, lang)}" for u, v, _ in per_unit)
+        if amount:
+            line += f" · {_sum(amount)} {L['amount']}"
+            if len(per_unit) == 1 and per_unit[0][1]:
+                u, v, a = per_unit[0]
+                line += f" · {L['avg']} {_n(round(a / v, 2))} {L['per']}{_unit(u, lang)}"
         out.append(line)
     return out
 
@@ -118,24 +130,30 @@ def product_report(con: sqlite3.Connection, tnved: str, lang: str) -> str:
         return L["none"]
     name = row[0] if base_lang(lang) == "ru" else (lat_to_cyr(row[1]) if lang == UZ_CYR else row[1])
     years = con.execute(
-        "SELECT year, unit, COUNT(*), SUM(is_cancelled), SUM(CASE WHEN is_cancelled = 0 THEN volume END), "
-        "SUM(CASE WHEN is_cancelled = 0 THEN amount_uzs END) FROM deals WHERE tnved = ? GROUP BY year, unit ORDER BY year, unit",
-        (tnved,)).fetchall()
+        "SELECT year, COUNT(*), SUM(is_cancelled), SUM(CASE WHEN is_cancelled = 0 THEN amount_uzs END) "
+        "FROM deals WHERE tnved = ? GROUP BY year ORDER BY year", (tnved,)).fetchall()
     if not years:
         return L["none"]
+    volumes: dict[int, list] = {}
+    for year, unit, vol, amt in con.execute(
+            "SELECT year, unit, SUM(volume), SUM(amount_uzs) FROM deals WHERE tnved = ? AND is_cancelled = 0 "
+            "GROUP BY year, unit ORDER BY year, unit", (tnved,)):
+        volumes.setdefault(year, []).append((unit, vol, amt))
+    # Rankings by amount in so'm: comparable across units (kg vs t vs litre), unlike raw volumes.
     regions = con.execute(
-        "SELECT region, unit, SUM(volume) v FROM deals WHERE tnved = ? AND is_cancelled = 0 GROUP BY region, unit "
-        "ORDER BY v DESC LIMIT ?", (tnved, TOP_N)).fetchall()
-    parts = [f"📊 **{name}** (TN VED {tnved})", "", f"__{L['years']}:__", *_year_lines(years, lang, L)]
-    parts += ["", f"__{L['top_regions']}:__"]
-    parts += [f"{i}. {r} — **{_n(v)}** {_unit(u, lang)}" for i, (r, u, v) in enumerate(regions, 1)]
+        "SELECT region, SUM(amount_uzs) s FROM deals WHERE tnved = ? AND is_cancelled = 0 GROUP BY region "
+        "ORDER BY s DESC LIMIT ?", (tnved, TOP_N)).fetchall()
+    tn = "ТН ВЭД" if base_lang(lang) == "ru" or lang == UZ_CYR else "TN VED"
+    parts = [f"📊 **{name}** ({tn} {tnved})", "", f"__{L['years']}:__", *_year_lines(years, volumes, lang, L)]
+    parts += ["", f"__{L['top_regions']} ({L['amount']}):__"]
+    parts += [f"{i}. {r} — **{_sum(s)}** {L['amount']}" for i, (r, s) in enumerate(regions, 1)]
     for side, label in (("seller_inn", L["top_sellers"]), ("buyer_inn", L["top_buyers"])):
         top = con.execute(
-            f"SELECT d.{side}, p.name, d.unit, SUM(d.volume) v FROM deals d LEFT JOIN participants p ON p.inn = d.{side} "
-            f"WHERE d.tnved = ? AND d.is_cancelled = 0 GROUP BY d.{side}, d.unit ORDER BY v DESC LIMIT ?",
+            f"SELECT d.{side}, p.name, SUM(d.amount_uzs) s FROM deals d LEFT JOIN participants p ON p.inn = d.{side} "
+            f"WHERE d.tnved = ? AND d.is_cancelled = 0 GROUP BY d.{side} ORDER BY s DESC LIMIT ?",
             (tnved, TOP_N)).fetchall()
-        parts += ["", f"__{label}:__"]
-        parts += [f"{i}. {nm or inn} ({inn}) — **{_n(v)}** {_unit(u, lang)}" for i, (inn, nm, u, v) in enumerate(top, 1)]
+        parts += ["", f"__{label} ({L['amount']}):__"]
+        parts += [f"{i}. {nm or inn} ({inn}) — **{_sum(s)}** {L['amount']}" for i, (inn, nm, s) in enumerate(top, 1)]
     parts += ["", f"__{L['footer']}__"]
     return "\n".join(parts)
 
@@ -150,7 +168,7 @@ def company_report(con: sqlite3.Connection, inn: str, lang: str) -> str:
         "SELECT year, SUM(seller_inn = :i), SUM(buyer_inn = :i), SUM(is_cancelled), "
         "SUM(CASE WHEN is_cancelled = 0 THEN amount_uzs END), COUNT(*) FROM deals "
         "WHERE seller_inn = :i OR buyer_inn = :i GROUP BY year ORDER BY year", {"i": inn}).fetchall()
-    parts = [f"📊 **{name}** (STIR {inn})" if base_lang(lang) == "uz" else f"📊 **{name}** (ИНН {inn})"]
+    parts = [f"📊 **{name}** ({_own_text("STIR", lang)} {inn})" if base_lang(lang) == "uz" else f"📊 **{name}** (ИНН {inn})"]
     parts.append(f"{L['region']}: {region or '—'} · {L['role']}: {format_value(role, None, lang, 'role')}"
                  + (f" · {L['activity']}: {activity}" if activity else ""))
     if not years:
@@ -158,7 +176,7 @@ def company_report(con: sqlite3.Connection, inn: str, lang: str) -> str:
     parts += ["", f"__{L['years']}:__"]
     for year, as_seller, as_buyer, cancelled, amount, total in years:
         parts.append(f"{year}: **{_n(total)}** {L['deals']} ({L['as_seller']} {_n(as_seller)}, {L['as_buyer']} {_n(as_buyer)}, "
-                     f"{L['cancelled']} {_n(cancelled)}) · {_n(amount or 0)} {L['amount']}")
+                     f"{L['cancelled']} {_n(cancelled)}) · {_sum(amount)} {L['amount']}")
     products = con.execute(
         "SELECT CASE WHEN :ru THEN product_canon_ru ELSE product_canon_uz END, COUNT(*) c FROM deals "
         "WHERE (seller_inn = :i OR buyer_inn = :i) GROUP BY tnved ORDER BY c DESC LIMIT :n",
@@ -188,7 +206,7 @@ def broker_report(con: sqlite3.Connection, code: str, lang: str) -> str:
     if not years:
         return "\n".join(parts + ["", L["none"]])
     parts += ["", f"__{L['years']}:__"]
-    parts += [f"{y}: **{_n(t)}** {L['deals']} ({L['cancelled']} {_n(c)}) · {_n(a or 0)} {L['amount']}" for y, t, c, a in years]
+    parts += [f"{y}: **{_n(t)}** {L['deals']} ({L['cancelled']} {_n(c)}) · {_sum(a)} {L['amount']}" for y, t, c, a in years]
     products = con.execute(
         f"SELECT CASE WHEN :ru THEN product_canon_ru ELSE product_canon_uz END, COUNT(*) c FROM deals WHERE {where} "
         f"GROUP BY tnved ORDER BY c DESC LIMIT :n", {"b": code, "ru": base_lang(lang) == "ru", "n": TOP_N}).fetchall()
@@ -231,10 +249,10 @@ def overview_report(db_path: str, lang: str) -> str:
     years, products, brokers, regions = _overview_rows(db_path)
     total = sum(y[1] for y in years)
     parts = [f"📊 **{L['overview']}**", "", f"__{L['years']}:__"]
-    parts += [f"{y}: **{_n(t)}** {L['deals']} ({L['cancelled']} {_n(c)}) · {_n(a or 0)} {L['amount']}" for y, t, c, a in years]
+    parts += [f"{y}: **{_n(t)}** {L['deals']} ({L['cancelled']} {_n(c)}) · {_sum(a)} {L['amount']}" for y, t, c, a in years]
     parts.append(f"{L['total']}: **{_n(total)}** {L['deals']}")
     parts += ["", f"__{L['top_products']} ({L['amount']}):__"]
-    parts += [f"{i}. {_own_text(ru if base_lang(lang) == 'ru' else uz, lang)} — **{_n(s)}** {L['amount']}"
+    parts += [f"{i}. {_own_text(ru if base_lang(lang) == 'ru' else uz, lang)} — **{_sum(s)}** {L['amount']}"
               for i, (_, ru, uz, s) in enumerate(products, 1)]
     parts += ["", f"__{L['top_brokers']}:__"]
     parts += [f"{i}. {code} — {name}: **{_n(n)}** {L['deals']}" for i, (code, name, n) in enumerate(brokers, 1)]

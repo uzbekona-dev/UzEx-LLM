@@ -303,6 +303,11 @@ async def run() -> None:
     dp = build_dispatcher(build_agent())
     await bot.set_my_commands(COMMANDS)
     await _set_profile(bot)
+    if ANALYTICS and dp["agent"].db_path:  # warm the /statistika cache (cold run ~4 s)
+        try:
+            await asyncio.to_thread(analytics.overview_report, dp["agent"].db_path, "uz")
+        except Exception:  # noqa: BLE001
+            log.warning("analytics warm-up failed", exc_info=True)
     log.info("bot started")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)
