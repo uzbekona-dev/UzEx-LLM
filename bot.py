@@ -13,13 +13,21 @@ from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
-from aiogram.types import BotCommand, Message, ReplyKeyboardRemove
+from aiogram.types import (
+    BotCommand,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+    ReplyKeyboardRemove,
+)
 from aiogram.utils.chat_action import ChatActionSender
 from dotenv import load_dotenv
 
-from app.agent import Agent, record_qa
+from app import analytics
+from app.agent import Agent, AgentAnswer, record_qa
 from app.entities import EntityResolver
-from app.format import EVIDENCE_OPEN, render
+from app.format import EVIDENCE_OPEN, answer_html, render
 from app.history import ChatHistory
 from app.llm import Llm
 from app.sql_guard import open_db
@@ -29,6 +37,10 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name
 log = logging.getLogger("bot")
 
 TELEGRAM_MESSAGE_LIMIT = 4096
+# Deterministic analytics (fixed SQL, no LLM): button under answers + /statistika. Off unless ANALYTICS=1.
+ANALYTICS = os.environ.get("ANALYTICS", "0") in ("1", "true", "yes")
+BUTTON_TEXT = {"uz": "📊 Analitika", "uz_cyr": "📊 Аналитика", "ru": "📊 Аналитика"}
+ANALYTICS_ERROR = "Analitika hozircha mavjud emas. / Аналитика временно недоступна."
 
 WELCOME = (
     "🤖 <b>UZEX birja bitimlari bo'yicha AI-yordamchi</b>\n"
@@ -92,6 +104,8 @@ COMMANDS = [
     BotCommand(command="help", description="Nima so'rash mumkin / Что можно спросить"),
     BotCommand(command="examples", description="Misol savollar / Примеры вопросов"),
 ]
+if ANALYTICS:
+    COMMANDS.append(BotCommand(command="statistika", description="Umumiy statistika / Общая статистика"))
 
 router = Router(name="main")
 
@@ -183,21 +197,78 @@ async def _answer(message: Message, agent: Agent, chat_history: ChatHistory, que
         if ans.answerable and not ans.timed_out:
             chat_history.add(chat_id, question, ans.interpretation)
         parts = split_message(render(ans))
-        await _edit_or_resend(progress, parts[0])
-        for part in parts[1:]:
-            await message.answer(part)
+        markup = _analytics_markup(agent, ans)
+        await _edit_or_resend(progress, parts[0], reply_markup=markup if len(parts) == 1 else None)
+        for i, part in enumerate(parts[1:], 2):
+            await message.answer(part, reply_markup=markup if i == len(parts) else None)
     except Exception:  # never let one question kill the polling loop
         log.exception("failed on %r", question)
         await _edit_or_resend(progress, ERROR_MSG, parse_mode=None)
 
 
-async def _edit_or_resend(progress: Message, text: str, parse_mode: str | None = ParseMode.HTML) -> None:
+async def _edit_or_resend(progress: Message, text: str, parse_mode: str | None = ParseMode.HTML,
+                          reply_markup: InlineKeyboardMarkup | None = None) -> None:
     """Replace the ⏳ message with the answer; if editing fails (deleted, too old), send a new one."""
     try:
-        await progress.edit_text(text, parse_mode=parse_mode)
+        await progress.edit_text(text, parse_mode=parse_mode, reply_markup=reply_markup)
     except TelegramBadRequest as exc:
         log.warning("edit failed (%s), sending a new message", exc)
-        await progress.answer(text, parse_mode=parse_mode)
+        await progress.answer(text, parse_mode=parse_mode, reply_markup=reply_markup)
+
+
+def _analytics_markup(agent: Agent, ans: AgentAnswer) -> InlineKeyboardMarkup | None:
+    """A button per confidently resolved entity of the question; never fails the answer itself."""
+    if not ANALYTICS or not ans.answerable or ans.timed_out or not ans.rows or agent.resolver is None:
+        return None
+    try:
+        targets = analytics.pick_targets(agent.resolver.resolve(ans.question))
+    except Exception:  # noqa: BLE001
+        log.warning("analytics target resolution failed", exc_info=True)
+        return None
+    if not targets:
+        return None
+    label = BUTTON_TEXT.get(ans.language, BUTTON_TEXT["ru"])
+    rows = [[InlineKeyboardButton(text=f"{label}: {t.title[:28]}", callback_data=t.callback(ans.language))]
+            for t in targets]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+@router.callback_query(F.data.startswith("an|"))
+async def on_analytics(callback: CallbackQuery, agent: Agent) -> None:
+    await callback.answer()
+    parsed = analytics.parse_callback(callback.data or "")
+    if not parsed or callback.message is None or not agent.db_path:
+        return
+    lang, target = parsed
+    await _send_report(callback.message, lambda: _run_report(agent.db_path, target, lang))
+
+
+@router.message(Command("statistika", "stats"))
+async def on_statistics(message: Message, agent: Agent) -> None:
+    if not ANALYTICS or not agent.db_path:
+        return
+    lang = "ru" if message.from_user and (message.from_user.language_code or "").startswith("ru") else "uz"
+    await _send_report(message, lambda: analytics.overview_report(agent.db_path, lang))
+
+
+def _run_report(db_path: str, target: analytics.Target, lang: str) -> str:
+    con = open_db(db_path)
+    try:
+        return analytics.report(con, target, lang)
+    finally:
+        con.close()
+
+
+async def _send_report(message: Message, build) -> None:
+    async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
+        try:
+            text = await asyncio.to_thread(build)
+        except Exception:  # noqa: BLE001 - analytics must never break the bot
+            log.exception("analytics report failed")
+            await message.answer(ANALYTICS_ERROR, parse_mode=None)
+            return
+    for part in split_message(answer_html(text)):
+        await message.answer(part)
 
 
 async def _set_profile(bot: Bot) -> None:

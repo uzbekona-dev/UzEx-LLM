@@ -85,3 +85,38 @@ def test_lock_is_released_after_exception() -> None:
             assert locks.is_busy(7)
 
     asyncio.run(scenario())
+
+
+def _answer(question: str, **kw):
+    from app.agent import AgentAnswer
+    base = dict(question=question, language="uz", answer="a", interpretation="i", sql="SELECT 1", rows=[(1,)],
+                columns=["x"], answerable=True, verified=True, elapsed_sec=1.0)
+    return AgentAnswer(**{**base, **kw})
+
+
+class _FakeAgent:
+    def __init__(self) -> None:
+        from types import SimpleNamespace as P
+        res = P(companies=[P(inn="915861525", name="\"Qojo Invest\" MChJ")], brokers=[],
+                products=[P(tnved="520100", name_uz="Paxta xomashyosi", score=100)], inns=[])
+        self.resolver = P(resolve=lambda q: res)
+        self.db_path = "data/uzex.db"
+
+
+def test_analytics_button_off_by_default(monkeypatch) -> None:
+    import bot
+    monkeypatch.setattr(bot, "ANALYTICS", False)
+    assert bot._analytics_markup(_FakeAgent(), _answer("Qojo Invest paxta")) is None
+
+
+def test_analytics_buttons_when_enabled(monkeypatch) -> None:
+    import bot
+    monkeypatch.setattr(bot, "ANALYTICS", True)
+    markup = bot._analytics_markup(_FakeAgent(), _answer("Qojo Invest paxta"))
+    buttons = [row[0] for row in markup.inline_keyboard]
+    assert [b.callback_data for b in buttons] == ["an|uz|c|915861525", "an|uz|p|520100"]
+    assert buttons[0].text.startswith("📊 Analitika: ")
+    # no button for refusals, timeouts or empty results
+    assert bot._analytics_markup(_FakeAgent(), _answer("q", answerable=False)) is None
+    assert bot._analytics_markup(_FakeAgent(), _answer("q", rows=[])) is None
+    assert bot._analytics_markup(_FakeAgent(), _answer("q", timed_out=True)) is None
