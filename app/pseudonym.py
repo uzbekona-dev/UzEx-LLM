@@ -17,7 +17,8 @@ from app.normalize import company_key
 _INN_RE = re.compile(r"(?<![\d.,])\d{9}(?![\d.,])")
 _BROKER_CODE_RE = re.compile(r"\bBK\s?(\d{3})\b", re.I)
 _TOKEN_RE = re.compile(r"\{(C\d+_INNS|C\d+_KEY|C\d+|INN\d+|B\d+)\}")
-_QUOTED_TOKEN_RE = re.compile(r"'?\{(C\d+_INNS|C\d+_KEY|C\d+|INN\d+|B\d+)\}'?")  # tokens are always text: we add the quotes
+# tokens are always text: we add the quotes. "{C1}_INNS" (suffix outside the braces) is accepted too.
+_QUOTED_TOKEN_RE = re.compile(r"'?\{(C\d+)\}_(INNS|KEY)'?|'?\{(C\d+_INNS|C\d+_KEY|C\d+|INN\d+|B\d+)\}'?")
 
 
 @dataclass(frozen=True)
@@ -32,7 +33,7 @@ class Masked:
 
     def substitute_sql(self, sql: str) -> str:
         def repl(m: re.Match) -> str:
-            token = m.group(1)
+            token = m.group(3) or f"{m.group(1)}_{m.group(2)}"
             if token.endswith("_INNS"):
                 inns = self.inns.get("{" + token[:-5] + "}", [])
                 return ", ".join(f"'{i}'" for i in inns) or "''"
@@ -107,7 +108,7 @@ class Pseudonymizer:
                     inns[ph] = [h.inn for h in hits]
                     legend.append(
                         f"- {ph}: a company named in the question; {len(hits)} participant(s) matched -> "
-                        f"filter with inn IN ({ph}_INNS) (or seller_inn/buyer_inn IN ({ph}_INNS)); "
+                        f"filter with inn IN ({{C{c}_INNS}}) (or seller_inn/buyer_inn IN ({{C{c}_INNS}})); "
                         f"SELECT inn and name so each match is shown separately")
                 else:
                     # not in our data -> not an identity we hold; leave the wording, just tell the planner

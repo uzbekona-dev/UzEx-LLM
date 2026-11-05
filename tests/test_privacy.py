@@ -94,3 +94,15 @@ def test_uzbek_apostrophes_are_not_company_quotes() -> None:
     from app.verify import verify_answer
     text = "Ma'lumotlardan to'g'ridan-to'g'ri: Bo'juk ta'minot — **5 ta**"
     assert verify_answer(text, [(5,)], "q").ok
+
+
+def test_legend_suffix_outside_braces_is_substituted(pseudo) -> None:
+    m = _mask(pseudo, "Сколько сделок у компании Qojo Invest?")
+    assert "{C1_INNS}" in m.entity_block and "{C1}_INNS" not in m.entity_block
+    assert m.substitute_sql("WHERE p.inn IN ({C1}_INNS)") == "WHERE p.inn IN ('912004930', '915861525')"
+
+
+def test_multiple_rows_without_line_template_are_all_shown() -> None:
+    spec = RenderSpec(headline="Narx **{avg_price}** so'm / {unit}")
+    out = render(spec, ["unit", "avg_price"], [("килограмм", 12475.28), ("тонна", 10710734.5)], "uz", "q").text
+    assert "12 475.28" in out and "10 710 734.5" in out and out.count("Narx") == 2

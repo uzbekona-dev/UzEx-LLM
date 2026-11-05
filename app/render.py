@@ -133,12 +133,16 @@ def render_template(spec: RenderSpec, columns: list[str], rows: list[tuple], lan
     if not records:
         return spec.empty or ("Ma'lumotlarda mos yozuv topilmadi." if lang == "uz" else "В данных подходящих записей нет.")
     parts: list[str] = []
-    if spec.headline:
+    # several rows but no per-row template: repeat the headline per row so no row is silently dropped
+    line = spec.line or (spec.headline if len(records) > 1 else "")
+    if spec.headline and spec.line:
         parts.append(_fill(spec.headline, records[0], len(records), lang))
-    if spec.line and (len(records) > 1 or not spec.headline):
-        parts.extend(_fill(spec.line, rec, len(records), lang) for rec in records[:MAX_LINES])
+    elif spec.headline and len(records) == 1:
+        parts.append(_fill(spec.headline, records[0], len(records), lang))
+    if line and (len(records) > 1 or not spec.headline):
+        parts.extend(_fill(line, rec, len(records), lang) for rec in records[:MAX_LINES])
         if len(records) > MAX_LINES:
-            parts.append("…" if lang == "uz" else "…")
+            parts.append("…")
     if spec.note:
         parts.append("")
         parts.append(_fill(spec.note, records[0], len(records), lang))
