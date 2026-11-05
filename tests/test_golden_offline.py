@@ -110,3 +110,25 @@ def test_golden_sql_matches_expectations(con, entry: GoldenEntry) -> None:
     for bad in entry.forbidden:
         assert not any(abs(v - bad) <= REL_TOL * max(1.0, abs(bad)) for v in values), \
             f"{entry.id}: forbidden number {bad} is a real value in the rows"
+
+
+def test_language_check_in_golden_checker() -> None:
+    import sys
+    sys.path.insert(0, "scripts")
+    from golden_check import GoldenEntry, language_problems
+
+    from app.agent import AgentAnswer
+
+    def entry(q, tags=()):
+        return GoldenEntry(id="x", q=q, sql=None, numbers=(), strings=(), unanswerable=False, tags=tuple(tags), forbidden=())
+
+    def ans(text, lang, rows=()):
+        return AgentAnswer("q", lang, text, "", "SELECT 1", list(rows), [], True, True, 1.0)
+
+    rows = [("Farg‘ona viloyati", "Исполнен")]
+    assert language_problems(entry("Un bo'yicha qaysi viloyat?"), ans("Eng ko'p bitim Farg‘ona viloyatida tuzilgan", "uz", rows)) == []
+    assert language_problems(entry("Ун бўйича қайси вилоят?"), ans("Энг кўп битим Farg‘ona viloyati ҳудудида тузилган", "uz_cyr", rows)) == []
+    assert language_problems(entry("Сколько сделок по муке?"), ans("Больше всего сделок заключено в регионе", "ru")) == []
+    assert language_problems(entry("Ун бўйича қайси вилоят?"), ans("Eng ko'p bitim tuzilgan hudud", "uz"))  # wrong script
+    assert language_problems(entry("Сколько сделок по муке?"), ans("Eng ko'p bitim tuzilgan hudud", "uz"))  # wrong language
+    assert language_problems(entry("How many deals?", ["en"]), ans("Всего сделок", "ru")) == []

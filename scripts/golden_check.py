@@ -19,7 +19,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from dotenv import load_dotenv  # noqa: E402
 
-from app.agent import Agent, AgentAnswer  # noqa: E402
+from app.agent import Agent, AgentAnswer, _guess_language  # noqa: E402
 from app.entities import EntityResolver  # noqa: E402
 from app.llm import Llm  # noqa: E402
 from app.normalize import translit  # noqa: E402
@@ -120,8 +120,38 @@ def forbidden_present(entry: GoldenEntry, answer: str) -> list[str]:
     return [f"forbidden number {bad:g} present" for bad in entry.forbidden if bad in answer_numbers]
 
 
+_WORD_RE = re.compile(r"[^\W\d_]{3,}")
+
+
+def _is_cyr_word(word: str) -> bool:
+    return sum("Ѐ" <= c <= "ӿ" for c in word) > len(word) / 2
+
+
+def language_problems(entry: GoldenEntry, ans: AgentAnswer) -> list[str]:
+    """The answer must be in the question's language and script (uz Latin / uz Cyrillic / ru).
+
+    Data values (names, regions, statuses from the result rows) keep their own script, so words that
+    occur in the rows are ignored; the remaining words are our wording and must match the script."""
+    if "en" in entry.tags:  # English questions are answered in Russian or Uzbek; script not prescribed
+        return []
+    expected = _guess_language(entry.q)
+    if expected == "uz" and ans.language == "ru":
+        expected = "ru"  # Russian typed in Latin letters ("skolko sdelok ...") may be answered in Russian
+    if ans.language != expected:
+        return [f"language {ans.language!r}, expected {expected!r}"]
+    data_words = {w.lower() for row in ans.rows for cell in row if isinstance(cell, str) for w in _WORD_RE.findall(cell)}
+    own = [w for w in _WORD_RE.findall(ans.answer) if w.lower() not in data_words]
+    if len(own) < 3:
+        return []
+    cyr_share = sum(_is_cyr_word(w) for w in own) / len(own)
+    want_cyr = expected in ("ru", "uz_cyr")
+    if (want_cyr and cyr_share < 0.7) or (not want_cyr and cyr_share > 0.3):
+        return [f"answer script: {cyr_share:.0%} Cyrillic words, expected {'Cyrillic' if want_cyr else 'Latin'}"]
+    return []
+
+
 def check_entry(entry: GoldenEntry, ans: AgentAnswer) -> CheckResult:
-    missing: list[str] = forbidden_present(entry, ans.answer)
+    missing: list[str] = forbidden_present(entry, ans.answer) + language_problems(entry, ans)
     if entry.unanswerable:
         # Agent must either refuse (answerable=False) or run a query that finds nothing (e.g. a missing deal number).
         refused = not ans.answerable or (ans.sql is not None and not ans.rows)
