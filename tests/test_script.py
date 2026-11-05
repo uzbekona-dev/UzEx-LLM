@@ -79,3 +79,16 @@ def test_unanswerable_cyrillic_message() -> None:
     plan = {"language": "uz", "answerable": False, "reason": "Direktorlar haqida ma'lumot yo'q.", "interpretation": "x", "sql": ""}
     ans = Agent(None, ScriptedLlm([json.dumps(plan)]), db_path=DB).ask("Директори ким?")
     assert ans.answer == "Маълумотларда бу саволга жавоб йўқ. Директорлар ҳақида маълумот йўқ."
+
+
+@pytest.mark.skipif(not os.path.exists(DB), reason="data/uzex.db not built")
+def test_latin_question_with_cyrillic_template_is_sent_back() -> None:
+    from tests.test_agent import ScriptedLlm
+
+    sql = "SELECT COUNT(*) AS contracts_total FROM contracts WHERE contract_form = 'Фьючерс'"
+    cyr = {"language": "uz", "answerable": True, "interpretation": "x", "sql": sql,
+           "render": {"headline": "Фьючерс шартномалар сони **{contracts_total} та**."}}
+    lat = {**cyr, "render": {"headline": "Fyuchers shartnomalar soni **{contracts_total} ta**."}}
+    llm = ScriptedLlm([json.dumps(cyr), json.dumps(lat)])
+    ans = Agent(None, llm, db_path=DB).ask("fyuchers kontrakt nechta")
+    assert ans.answer == "Fyuchers shartnomalar soni **79 ta**." and "LATIN" in llm.calls[1]

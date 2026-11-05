@@ -230,6 +230,19 @@ def _cancelled_problems(sql: str, spec: RenderSpec, result: QueryResult) -> list
             "(SELECT COUNT(*) FROM deals WHERE <same filters> AND is_cancelled = 1) AS cancelled_deals) and show it in the note"]
 
 
+_SLOT_RE = re.compile(r"\{[^{}]*\}")
+
+
+def _script_problems(plan: dict, spec: RenderSpec, question: str) -> list[str]:
+    """An Uzbek question in Latin letters must get a Latin template (Cyrillic is produced by code when needed)."""
+    if plan.get("language") != "uz" or is_cyrillic(question):
+        return []
+    wording = _SLOT_RE.sub(" ", " ".join(spec.texts()))
+    if is_cyrillic(wording):
+        return ["write the template in Uzbek LATIN script (the question is in Latin); keep {slots} unchanged"]
+    return []
+
+
 def _deal_total_problems(spec: RenderSpec, result: QueryResult) -> list[str]:
     """A count of active deals must come with the total (all statuses) — "how many deals" means all of them (rule 7)."""
     if not result.rows:
@@ -350,6 +363,7 @@ class Agent:
             problems += _tonne_problems(masked.question, spec, result)
             problems += _cancelled_problems(str(plan["sql"]), spec, result)
             problems += _deal_total_problems(spec, result)
+            problems += _script_problems(plan, spec, masked.question)
             if problems and attempt < MAX_SQL_ATTEMPTS:
                 feedback = f"Template problems: {problems}. Columns available: {result.columns}. Use only slots, no literal values."
                 debug.append(feedback)
