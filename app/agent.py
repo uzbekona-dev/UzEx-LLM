@@ -214,6 +214,25 @@ def _cancelled_problems(sql: str, spec: RenderSpec, result: QueryResult) -> list
             "(SELECT COUNT(*) FROM deals WHERE <same filters> AND is_cancelled = 1) AS cancelled_deals) and show it in the note"]
 
 
+def _deal_total_problems(spec: RenderSpec, result: QueryResult) -> list[str]:
+    """A count of active deals must come with the total (all statuses) — "how many deals" means all of them (rule 7)."""
+    if not result.rows:
+        return []
+    cols = [c.lower() for c in result.columns]
+    active = [c for c in result.columns if "active" in c.lower()]
+    if not active:
+        return []
+    totals = [c for c, low in zip(result.columns, cols)
+              if "cancel" not in low and "active" not in low and ("total" in low or low in ("deals", "deal_count", "deals_count"))
+              and ("deal" in low or "count" in low)]
+    if not totals:
+        return ["you return active deals only: also return COUNT(*) AS deals_total (all statuses) and show it first, "
+                "e.g. '{deals_total} ta bitim, shundan {deals_active} tasi amalda'"]
+    if not any("{" + t + "}" in "".join(spec.texts()) for t in totals):
+        return [f"show the total deal count {{{totals[0]}}} in the answer, not only the active ones"]
+    return []
+
+
 class _NullMasked:
     """Used when no resolver is configured: nothing is masked."""
 
@@ -314,6 +333,7 @@ class Agent:
             problems = check_template(spec, result.columns, f"{masked.question}\n{plan['sql']}")
             problems += _tonne_problems(masked.question, spec, result)
             problems += _cancelled_problems(str(plan["sql"]), spec, result)
+            problems += _deal_total_problems(spec, result)
             if problems and attempt < MAX_SQL_ATTEMPTS:
                 feedback = f"Template problems: {problems}. Columns available: {result.columns}. Use only slots, no literal values."
                 debug.append(feedback)

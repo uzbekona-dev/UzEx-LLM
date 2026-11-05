@@ -169,3 +169,20 @@ def test_sold_volume_without_cancelled_count_is_sent_back() -> None:
     ans = Agent(None, llm, db_path=DB).ask("Сколько сахара продано в 2023 году?")
     assert "84 760 т" in ans.answer and "Аннулировано сделок: 156" in ans.answer
     assert "exclude cancelled" in llm.calls[1]
+
+
+def test_active_only_deal_count_is_sent_back_for_total() -> None:
+    where = "FROM deals d JOIN participants pb ON pb.inn = d.buyer_inn WHERE d.tnved = '110100' AND pb.region = 'Samarqand viloyati'"
+    active_only = {"language": "ru", "answerable": True, "interpretation": "x",
+                   "sql": f"SELECT COUNT(CASE WHEN d.is_cancelled = 0 THEN 1 END) AS deals_active, "
+                          f"COUNT(CASE WHEN d.is_cancelled = 1 THEN 1 END) AS cancelled_deals {where}",
+                   "render": {"headline": "**{deals_active}** сделок", "note": "Аннулировано: {cancelled_deals}."}}
+    with_total = {**active_only,
+                  "sql": f"SELECT COUNT(*) AS deals_total, COUNT(CASE WHEN d.is_cancelled = 0 THEN 1 END) AS deals_active, "
+                         f"COUNT(CASE WHEN d.is_cancelled = 1 THEN 1 END) AS cancelled_deals {where}",
+                  "render": {"headline": "Всего **{deals_total}** сделок, из них {deals_active} действующих",
+                             "note": "Аннулировано: {cancelled_deals}."}}
+    llm = ScriptedLlm([json.dumps(active_only), json.dumps(with_total)])
+    ans = Agent(None, llm, db_path=DB).ask("Сколько сделок по муке заключили покупатели из Самаркандской области?")
+    assert "Всего **2 150** сделок, из них 2 004 действующих" in ans.answer
+    assert "deals_total" in llm.calls[1]
