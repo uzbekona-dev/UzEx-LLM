@@ -145,10 +145,27 @@ def test_critic_fix_is_applied_only_when_it_runs_with_same_columns(monkeypatch: 
 
 
 def test_tonne_question_with_kg_template_is_sent_back() -> None:
-    sql = "SELECT unit, SUM(volume) AS total_volume FROM deals WHERE tnved = '520100' AND year = 2024 AND is_cancelled = 0 GROUP BY unit"
+    sql = ("SELECT unit, SUM(volume) AS total_volume, (SELECT COUNT(*) FROM deals WHERE tnved = '520100' AND year = 2024 "
+           "AND is_cancelled = 1) AS cancelled_deals FROM deals WHERE tnved = '520100' AND year = 2024 AND is_cancelled = 0 GROUP BY unit")
     kg_plan = {"language": "uz", "answerable": True, "interpretation": "x", "sql": sql,
-               "render": {"headline": "Jami **{total_volume} {unit}**"}}
-    t_plan = {**kg_plan, "render": {"headline": "Jami **{total_volume:t} tonna** ({total_volume} {unit})"}}
+               "render": {"headline": "Jami **{total_volume} {unit}**", "note": "{cancelled_deals} ta bekor qilingan."}}
+    t_plan = {**kg_plan, "render": {"headline": "Jami **{total_volume:t} tonna** ({total_volume} {unit})",
+                                    "note": "{cancelled_deals} ta bekor qilingan bitim hisobga olinmadi."}}
     llm = ScriptedLlm([json.dumps(kg_plan), json.dumps(t_plan)])
     ans = Agent(None, llm, db_path=DB).ask("2024-yilda qancha tonna paxta sotilgan?")
     assert "1 672 494.96 tonna" in ans.answer and "asked in tonnes" in llm.calls[1]
+
+
+def test_sold_volume_without_cancelled_count_is_sent_back() -> None:
+    base = "FROM deals WHERE tnved = '170199' AND year = 2023"
+    no_cancel = {"language": "ru", "answerable": True, "interpretation": "x",
+                 "sql": f"SELECT unit, SUM(volume) AS total_volume {base} AND is_cancelled = 0 GROUP BY unit",
+                 "render": {"headline": "Продано **{total_volume} {unit}**"}}
+    with_cancel = {**no_cancel,
+                   "sql": f"SELECT unit, SUM(volume) AS total_volume, (SELECT COUNT(*) {base} AND is_cancelled = 1) AS cancelled_deals "
+                          f"{base} AND is_cancelled = 0 GROUP BY unit",
+                   "render": {"headline": "Продано **{total_volume} {unit}**", "note": "Аннулировано сделок: {cancelled_deals}."}}
+    llm = ScriptedLlm([json.dumps(no_cancel), json.dumps(with_cancel)])
+    ans = Agent(None, llm, db_path=DB).ask("Сколько сахара продано в 2023 году?")
+    assert "84 760 т" in ans.answer and "Аннулировано сделок: 156" in ans.answer
+    assert "exclude cancelled" in llm.calls[1]

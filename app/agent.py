@@ -198,6 +198,22 @@ def _tonne_problems(question: str, spec: RenderSpec, result: QueryResult) -> lis
     return ["the user asked in tonnes and the unit is kilogram: show the volume as {volume_column:t} tonna ({volume_column} kg)"]
 
 
+_EXCLUDES_CANCELLED_RE = re.compile(r"is_cancelled\s*=\s*0", re.I)
+_AGGREGATE_RE = re.compile(r"\b(SUM|COUNT|AVG)\s*\(", re.I)
+
+
+def _cancelled_problems(sql: str, spec: RenderSpec, result: QueryResult) -> list[str]:
+    """An aggregate that silently drops cancelled deals must also report how many were dropped (rule 7)."""
+    if not result.rows or not _EXCLUDES_CANCELLED_RE.search(sql) or not _AGGREGATE_RE.search(sql):
+        return []
+    if any("cancel" in c.lower() for c in result.columns):
+        if any("cancel" in t for t in spec.texts()):
+            return []
+        return ["the cancelled-deals column is selected but not shown: add it to the note, e.g. '{cancelled_deals} ta bitim bekor qilingan'"]
+    return ["the sums exclude cancelled deals: also return the cancelled count as a column (e.g. "
+            "(SELECT COUNT(*) FROM deals WHERE <same filters> AND is_cancelled = 1) AS cancelled_deals) and show it in the note"]
+
+
 class _NullMasked:
     """Used when no resolver is configured: nothing is masked."""
 
@@ -297,6 +313,7 @@ class Agent:
             spec = RenderSpec.from_plan(plan.get("render"))
             problems = check_template(spec, result.columns, f"{masked.question}\n{plan['sql']}")
             problems += _tonne_problems(masked.question, spec, result)
+            problems += _cancelled_problems(str(plan["sql"]), spec, result)
             if problems and attempt < MAX_SQL_ATTEMPTS:
                 feedback = f"Template problems: {problems}. Columns available: {result.columns}. Use only slots, no literal values."
                 debug.append(feedback)
