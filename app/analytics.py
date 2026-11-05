@@ -71,7 +71,7 @@ def parse_callback(data: str) -> tuple[str, Target] | None:
     return parts[1], Target(parts[2], parts[3], "")
 
 
-def pick_targets(resolution) -> list[Target]:
+def pick_targets(resolution, lang: str = "uz") -> list[Target]:
     """Only confidently resolved entities get a button; nothing resolved -> no button."""
     targets: list[Target] = []
     for c in resolution.companies[:MAX_TARGETS]:
@@ -80,10 +80,12 @@ def pick_targets(resolution) -> list[Target]:
         targets.append(Target("b", code, code))
     products = [p for p in resolution.products if p.score >= MIN_PRODUCT_SCORE]
     if products:
-        targets.append(Target("p", products[0].tnved, products[0].name_uz))
+        p = products[0]
+        name = getattr(p, "name_ru", p.name_uz) if base_lang(lang) == "ru" else _own_text(p.name_uz, lang)
+        targets.append(Target("p", p.tnved, name))
     for inn in resolution.inns:
         if all(t.key != inn for t in targets):
-            targets.append(Target("c", inn, f"STIR {inn}"))
+            targets.append(Target("c", inn, f"ИНН {inn}" if base_lang(lang) == "ru" else _own_text(f"STIR {inn}", lang)))
     return targets[:MAX_TARGETS]
 
 

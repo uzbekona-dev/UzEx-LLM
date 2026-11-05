@@ -221,7 +221,7 @@ def _analytics_markup(agent: Agent, ans: AgentAnswer) -> InlineKeyboardMarkup | 
     if not ANALYTICS or not ans.answerable or ans.timed_out or not ans.rows or agent.resolver is None:
         return None
     try:
-        targets = analytics.pick_targets(agent.resolver.resolve(ans.question))
+        targets = analytics.pick_targets(agent.resolver.resolve(ans.question), ans.language)
     except Exception:  # noqa: BLE001
         log.warning("analytics target resolution failed", exc_info=True)
         return None

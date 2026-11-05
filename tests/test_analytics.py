@@ -89,3 +89,11 @@ def test_pick_targets_only_confident() -> None:
     assert kinds == [("c", "915861525"), ("b", "BK045"), ("p", "520100")]
     weak = P(companies=[], brokers=[], products=[P(tnved="110100", name_uz="Un", score=80)], inns=[])
     assert an.pick_targets(weak) == []
+
+
+def test_button_titles_follow_language() -> None:
+    P = SimpleNamespace
+    res = P(companies=[], brokers=[], inns=[], products=[P(tnved="520100", name_uz="Paxta xomashyosi", name_ru="Хлопок-сырец", score=100)])
+    assert an.pick_targets(res, "ru")[0].title == "Хлопок-сырец"
+    assert an.pick_targets(res, "uz_cyr")[0].title == "Пахта хомашёси"
+    assert an.pick_targets(res, "uz")[0].title == "Paxta xomashyosi"
