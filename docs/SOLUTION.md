@@ -11,7 +11,8 @@ Vazifa — 500 000 bitim, 6 616 shartnoma, 14 392 ishtirokchi, 120 broker va kun
 savollarga **aniq raqam, nom va kod bilan** javob berish, ma'lumotda javob bo'lmasa — shuni ochiq aytish.
 Topshiriqdagi eng qattiq talab: o'ylab topilgan raqam, kompaniya yoki tovar = saralashdan chiqish. Shuning uchun
 yondashuv bitta prinsipga qurilgan: **LLM hech qachon hisoblamaydi, ma'lumotni ko'rmaydi va "eslamaydi"**.
-Bitta LLM chaqiruvi savolni SQL so'roviga va javob *shabloniga* (`{ustun}` uyachali matn) tarjima qiladi;
+Bitta LLM chaqiruvi savolni SQL so'roviga va javob *shabloniga* (`{ustun}` uyachali matn) tarjima qiladi
+(ikkinchi, qisqa chaqiruv — SQL-tanqidchi — so'rov mantiqini qoidalar bo'yicha tekshiradi);
 SQLite hisoblaydi, shablonni qatorlar bilan kod to'ldiradi. LLM natija qatorlarini umuman ko'rmaydi, shuning
 uchun raqam, nom, kod va sana javob matniga faqat bazadagi qatorlardan kiradi — o'ylab topishga joy yo'q.
 Savoldagi kompaniya nomlari, STIR va broker kodlari LLMga yuborilishidan oldin `{C1}`, `{INN1}`, `{B1}`
@@ -174,15 +175,41 @@ mos kelmagan iboralar ham o'zgartirilmaydi: ular bizda saqlanadigan identifikato
 qadam ham: `OPENAI_BASE_URL` ni Ollama/vLLM ga yo'naltirish kifoya, kod o'zgarmaydi.
 
 **4.9. Testlar.**
-- `tests/` — 138 ta offline pytest (LLMsiz): normalizatsiya, SQL guard, verifier, entity resolution,
+- `tests/` — 285 ta offline pytest (LLMsiz): normalizatsiya, SQL guard, verifier, entity resolution,
   pseudonimizatsiya va shablon guard (`test_privacy.py`), reja JSONini tahlil qilish (`test_parse_json.py`),
   agent oqimi soxta LLM bilan (`test_agent.py`), bot xabarlarini bo'lish, LLM zanjiri (soxta provayderlar
-  bilan), formatlash.
+  bilan), formatlash, o'zbek kirill (`test_script.py`), analitika (`test_analytics.py`).
 - `tests/golden.jsonl` — 40 ta savol (20 uz / 20 ru; bitim, shartnoma, tovar, broker, eksport, nav/klass,
   top-N, 6 ta tuzoq) har biri uchun qo'lda yozilgan SQL va kutilgan raqamlar/satrlar.
   `tests/test_golden_offline.py` shu SQLlar hozirgi bazada kutilgan qiymatni berishini tekshiradi (regressiya).
   `scripts/golden_check.py` esa jonli agent javobida kutilgan raqamlar borligini tekshiradi.
 - `scripts/run_questions.py` — `tests/questions.txt` dagi savollarni jonli agentdan o'tkazib hisobot yozadi.
+
+**4.10. O'zbek kirill yozuvi.** Savol o'zbek kirillida yozilsa, javob ham o'zbek kirillida beriladi
+(`app/script.py`). Javob odatdagidek o'zbek lotinida tuziladi, keyin LLMsiz, deterministik tarzda kirillga
+o'giriladi. Faqat bizning matnimiz o'giriladi (shablon matni, "asos" bloki yorliqlari, xabarlar); ma'lumot
+qiymatlari (kompaniya nomlari) o'girishdan keyin qo'yiladi va bazadagidek qoladi; raqamlar, kodlar (`BK045`) va
+qisqartmalar (`SQL`, `UZS`) o'zgarmaydi. Tekshiruv: `tests/test_script.py`.
+
+**4.11. Deterministik analitika** (`app/analytics.py`, `ANALYTICS=1`). Biz yozgan qat'iy SQL asosidagi tayyor
+hisobotlar; LLM ishtirok etmaydi.
+- **"📊 Analitika" tugmasi** javob ostida faqat savolda ishonchli aniqlangan obyekt bo'lsa chiqadi: tovar
+  (TN VED, moslik bali ≥ 90), kompaniya (STIR bo'yicha; nomdosh kompaniyalar alohida tugma oladi) yoki broker.
+  Ko'pi bilan 3 tugma; rad javobi, bo'sh natija va timeoutda tugma yo'q. Bosilganda hisobot yuboriladi:
+  - *Tovar:* yillar bo'yicha bitimlar (bekorlar alohida), bekor qilinmagan hajm (birlik bo'yicha), summa (so'm),
+    vaznli o'rtacha narx; top hududlar (sotuvchi ombori), top sotuvchilar, top xaridorlar.
+  - *Kompaniya:* hudud / rol / faoliyat; yillar bo'yicha sotuvchi va xaridor sifatidagi bitimlar, bekorlar,
+    summa; top tovarlar; brokerlar.
+  - *Broker:* yillar bo'yicha bitimlar (broker ikki tomonda bo'lsa ham bitim bir marta sanaladi), summa; top
+    tovarlar; top mijozlar.
+- **`/statistika`** — butun baza bo'yicha umumiy ko'rinish: yillar bo'yicha, summa bo'yicha top-10 tovar, top
+  brokerlar, top hududlar; natija keshlanadi.
+- **Til.** Hisobot javob tilida (uz lotin / uz kirill / ru); `/statistika` Telegram interfeysi ruscha bo'lsa ru,
+  aks holda uz lotin. Ma'lumot qiymatlari (kompaniya nomlari) bazadagidek qoladi.
+- **Nega xavfsiz.** LLM yo'q; obyektni kod topadi (`app/entities.py`); har bir raqam mustaqil SQL bilan
+  solishtiruvchi testlar bilan qoplangan (`tests/test_analytics.py`); savolga javob berish konveyeri (prompt,
+  agent) o'zgarmagan; hisobot xatosi faqat tugmaga ta'sir qiladi ("Analitika hozircha mavjud emas"), bot
+  ishlashda davom etadi. Bayroq `ANALYTICS`: `.env.example` da 0, serverda yoqilgan.
 
 ## 5. Sinov natijalari
 
@@ -242,7 +269,7 @@ Uchala holatda ham javobdagi raqamlar bazadagi qatorlardan olingan edi; o'ylab t
 Python 3.12; SQLite (standart kutubxona, read-only URI, progress-handler timeout); aiogram 3 (Telegram, long
 polling); LLM zanjiri — google-genai (Gemini), anthropic (Claude Messages API), openai (shu jumladan har qanday
 OpenAI-mos endpoint: Groq, Ollama, vLLM, OpenRouter — lokal model uchun `OPENAI_BASE_URL`); rapidfuzz (fuzzy
-entity matching); python-dotenv; pytest (138 offline test + 40 golden). Tashqi infratuzilma yo'q: bitta
+entity matching); python-dotenv; pytest (285 offline test + 40 golden). Tashqi infratuzilma yo'q: bitta
 jarayon, bitta `.db` fayl (~335 MB).
 
 ---
@@ -259,7 +286,8 @@ jarayon, bitta `.db` fayl (~335 MB).
 курсу доллара **точными числами, названиями и кодами**, а если ответа в данных нет — прямо это говорить. Самое
 жёсткое требование: выдуманное число, компания или товар = вылет из отбора. Поэтому подход построен на одном
 принципе: **LLM никогда не считает, не видит данные и не «вспоминает» их**. Один вызов LLM переводит вопрос
-в SQL и в *шаблон* ответа (текст со слотами `{колонка}`); SQLite считает, код заполняет шаблон строками. LLM
+в SQL и в *шаблон* ответа (текст со слотами `{колонка}`), второй короткий вызов (SQL-критик) проверяет логику
+запроса по правилам; SQLite считает, код заполняет шаблон строками. LLM
 вообще не видит строк результата, поэтому числа, названия, коды и даты попадают в текст ответа только из
 строк базы — выдумывать нечего. Названия компаний, ИНН и коды брокеров из вопроса заменяются на `{C1}`,
 `{INN1}`, `{B1}` до отправки в LLM («конфиденциальность на уровне конструкции»). Поверх этого готовый текст
@@ -420,15 +448,41 @@ attach/pragma/…` запрещены; без `LIMIT` добавляется 50;
 для продакшена: достаточно направить `OPENAI_BASE_URL` на Ollama/vLLM, код не меняется.
 
 **4.9. Тесты.**
-- `tests/` — 138 офлайн-тестов pytest (без LLM): нормализация, SQL guard, verifier, entity resolution,
+- `tests/` — 285 офлайн-тестов pytest (без LLM): нормализация, SQL guard, verifier, entity resolution,
   псевдонимизация и guard шаблона (`test_privacy.py`), разбор JSON плана (`test_parse_json.py`), поток агента
   с фиктивной LLM (`test_agent.py`), разбиение сообщений бота, цепочка LLM (с фиктивными провайдерами),
-  форматирование.
+  форматирование, узбекская кириллица (`test_script.py`), аналитика (`test_analytics.py`).
 - `tests/golden.jsonl` — 40 вопросов (20 uz / 20 ru; сделки, контракты, товары, брокеры, экспорт, сорт/класс,
   топ-N, 6 ловушек), для каждого — написанный вручную SQL и ожидаемые числа/строки.
   `tests/test_golden_offline.py` проверяет, что эти SQL на текущей базе дают ожидаемые значения (регрессия).
   `scripts/golden_check.py` проверяет, что в ответе живого агента есть ожидаемые числа.
 - `scripts/run_questions.py` — прогоняет `tests/questions.txt` через живого агента и пишет отчёт.
+
+**4.10. Узбекская кириллица.** Если вопрос написан на узбекской кириллице, ответ тоже даётся на узбекской
+кириллице (`app/script.py`). Ответ, как обычно, строится на узбекской латинице, затем детерминированно, без
+LLM, переводится в кириллицу. Конвертируется только наш текст (текст шаблона, подписи блока «основание»,
+сообщения); значения из данных (названия компаний) подставляются после конвертации и остаются как в базе;
+числа, коды (`BK045`) и аббревиатуры (`SQL`, `UZS`) не меняются. Проверка: `tests/test_script.py`.
+
+**4.11. Детерминированная аналитика** (`app/analytics.py`, `ANALYTICS=1`). Готовые отчёты по фиксированному
+SQL, написанному нами; LLM не участвует.
+- **Кнопка «📊 Analitika»** под ответом появляется, только если в вопросе есть уверенно распознанная сущность:
+  товар (ТН ВЭД, оценка совпадения ≥ 90), компания (по ИНН; омонимы получают отдельные кнопки) или брокер.
+  Не более 3 кнопок; при отказе, пустом результате и таймауте кнопки нет. По нажатию приходит отчёт:
+  - *Товар:* сделки по годам (аннулированные отдельно), объём без аннулированных (по единицам), сумма (сум),
+    средневзвешенная цена; топ регионов (склад продавца), топ продавцов, топ покупателей.
+  - *Компания:* регион / роль / деятельность; сделки по годам как продавец и как покупатель, аннулированные,
+    сумма; топ товаров; брокеры.
+  - *Брокер:* сделки по годам (сделка считается один раз, даже если брокер на обеих сторонах), сумма; топ
+    товаров; топ клиентов.
+- **`/statistika`** — обзор всей базы: по годам, топ-10 товаров по сумме, топ брокеров, топ регионов;
+  результат кэшируется.
+- **Язык.** Отчёт на языке ответа (uz латиница / uz кириллица / ru); `/statistika` — ru, если интерфейс
+  Telegram русский, иначе uz латиница. Значения из данных (названия компаний) остаются как в базе.
+- **Почему это безопасно.** LLM нет; сущность находит код (`app/entities.py`); каждое число покрыто тестами,
+  сверяющими отчёт с независимым SQL (`tests/test_analytics.py`); конвейер ответов на вопросы (промпт, агент)
+  не менялся; ошибка отчёта затрагивает только кнопку («Analitika hozircha mavjud emas»), бот продолжает
+  работать. Флаг `ANALYTICS`: 0 в `.env.example`, на сервере включён.
 
 ## 5. Результаты тестирования
 
@@ -487,5 +541,5 @@ attach/pragma/…` запрещены; без `LIMIT` добавляется 50;
 Python 3.12; SQLite (стандартная библиотека, read-only URI, таймаут через progress-handler); aiogram 3
 (Telegram, long polling); цепочка LLM — google-genai (Gemini), anthropic (Claude Messages API), openai (включая
 любой OpenAI-совместимый endpoint: Groq, Ollama, vLLM, OpenRouter — `OPENAI_BASE_URL` для локальной модели);
-rapidfuzz (fuzzy-сопоставление сущностей); python-dotenv; pytest (138 офлайн-тестов + 40 golden). Внешней
+rapidfuzz (fuzzy-сопоставление сущностей); python-dotenv; pytest (285 офлайн-тестов + 40 golden). Внешней
 инфраструктуры нет: один процесс, один файл `.db` (~335 МБ).

@@ -55,8 +55,12 @@ DEBUG=1 python -X utf8 cli.py "Кто покупатель по сделке 100
 | `OPENAI_BASE_URL` | — | Optional base URL for the `openai` provider (Groq, Ollama, OpenRouter, ...). |
 | `TELEGRAM_BOT_TOKEN` | — | Bot token from @BotFather. Required by `bot.py` only. |
 | `DB_PATH` | `data/uzex.db` | SQLite file built by `scripts/build_db.py`. Opened read-only. |
-| `ANSWER_BUDGET_SEC` | `45` | *(not in .env.example)* Time budget for LLM calls per question; no new LLM call starts after it. |
-| `QA_LOG` | `logs/qa.jsonl` | *(not in .env.example)* Where every answered question is appended (JSON lines). Empty string disables. |
+| `ANSWER_BUDGET_SEC` | `45` | Time budget for LLM calls per question; no new LLM call starts after it. |
+| `QA_LOG` | `logs/qa.jsonl` | Where every answered question is appended (JSON lines). Empty string disables. |
+| `SQL_CRITIC` | `1` | Second LLM call that reviews the SQL logic against the rules (`0` = off; +3-5 s per question). |
+| `PLAN_THINKING` | `low` | Gemini thinking level for the planner call: `low` \| `minimal` \| `medium` \| `high` \| `default` \| `0`. |
+| `CRITIC_THINKING` | `low` | Same for the SQL critic call. |
+| `ANALYTICS` | `0` | `1` enables deterministic analytics (fixed SQL, no LLM): the "📊 Analitika" button under answers and `/statistika`. `0` in `.env.example`; enabled on the server. |
 | `DEBUG` | — | *(cli.py only)* Any value prints the planner / verifier debug trail. |
 
 At least one vendor key must be set, otherwise startup fails with a clear message.
@@ -80,15 +84,53 @@ API key is empty are skipped with a warning, so you can list fallbacks before yo
 name means `gemini`. If `LLM_MODELS` is unset the legacy `GEMINI_MODEL` list is used.
 
 Time limits per question: 45 s LLM budget (`ANSWER_BUDGET_SEC`), 40 s per LLM request, 20 s per SQL query.
-Normally a question costs one LLM call; up to 3 planning attempts when the SQL fails or the template guard
+Normally a question costs two LLM calls (plan + SQL critic with `SQL_CRITIC=1`, both at `low` thinking); up to 3 planning attempts when the SQL fails or the template guard
 rejects the template (a literal number not in the question/SQL, an unknown column), then a generic
 "column: value" rendering built directly from the rows. Measured on the 40-question golden set: 37/40,
 2.3–19 s per question, median about 6 s (about 10 s with the previous two-call pipeline).
 
+## Uzbek Cyrillic answers
+
+A question written in Uzbek Cyrillic is answered in Uzbek Cyrillic (`app/script.py`). The answer is produced in
+Uzbek Latin as usual and then converted deterministically, without the LLM; only our own wording is converted
+(template text, labels, the evidence block). Data values such as company names are inserted after conversion and
+stay exactly as in the database; numbers, codes (`BK045`) and acronyms (`SQL`, `UZS`) are left alone.
+
+## Analytics (deterministic reports, `ANALYTICS=1`)
+
+`app/analytics.py` adds ready-made reports built from fixed SQL written by us. No LLM is involved, so a report
+cannot contain invented figures.
+
+**"📊 Analitika" button under an answer.** Shown only when the question names an entity that `app/entities.py`
+resolved confidently: a product (TN VED, match score >= 90), a company (by INN; homonyms with different INNs get
+separate buttons) or a broker. At most 3 buttons. No button on refusals, empty results or timeouts. Pressing it
+sends a report:
+
+- **Product:** deals per year (cancelled shown separately), non-cancelled volume per unit, amount (UZS) and
+  weighted average price; top regions (seller warehouse), top sellers, top buyers.
+- **Company:** region / role / activity; deals per year as seller and as buyer, cancelled, amount; top products;
+  brokers.
+- **Broker:** deals per year (a deal is counted once even if the broker is on both sides), amount; top products;
+  top clients.
+
+Volumes, amounts and prices exclude cancelled deals; deal counts show the cancelled ones separately.
+
+**`/statistika`** (also `/stats`): overview of the whole database — deals per year, top-10 products by amount,
+top brokers, top regions. The query result is cached in memory.
+
+**Language.** A report follows the language of the answer it is attached to (uz Latin / uz Cyrillic / ru);
+`/statistika` uses ru for Telegram users with a Russian interface, otherwise uz Latin. Data values (company
+names, regions) stay as in the database.
+
+**Why it is safe.** The entity is found by code, not by the LLM. Every figure is covered by tests that compare
+the report with independent SQL (`tests/test_analytics.py`). The question-answering pipeline (prompts, agent) is
+not changed. A failing report affects only the button: the user gets "Analitika hozircha mavjud emas" and the
+bot keeps working. With `ANALYTICS=0` neither the button nor `/statistika` exists.
+
 ## Tests
 
 ```bash
-python -X utf8 -m pytest tests -q                 # 206 offline tests, no LLM, ~10 s (needs data/uzex.db for a few)
+python -X utf8 -m pytest tests -q                 # 285 offline tests, no LLM, ~10 s (needs data/uzex.db for a few)
 python -X utf8 -m pytest tests/test_llm.py -q     # only the LLM chain logic (fake providers)
 python -X utf8 -m pytest tests/test_golden_offline.py -q   # golden SQL still gives the expected values on the DB
 
@@ -117,6 +159,8 @@ including 6 traps (missing deal number, data outside the period, people/phones, 
 ├── docs/
 │   └── SOLUTION.md            Solution description for the jury (uz + ru)
 ├── app/
+│   ├── analytics.py           Deterministic reports (fixed SQL, no LLM): product / company / broker, /statistika overview
+│   ├── script.py              Uzbek Latin -> Uzbek Cyrillic conversion of our own wording (data values untouched)
 │   ├── agent.py               Question -> mask -> one LLM call (SQL + template JSON) -> SQL -> rows -> render -> verify; time budget; QA log
 │   ├── pseudonym.py           Masks company names / INNs / broker codes as {C1} {INN1} {B1}; substitutes real values into SQL locally
 │   ├── render.py              Fills the answer template from rows (formatting, kg->t, uz translations); template guard; generic fallback
@@ -147,6 +191,8 @@ including 6 traps (missing deal number, data outside the period, people/phones, 
 │   ├── test_format.py         rendering
 │   ├── test_web.py            web endpoints with a fake agent (validation, history, rate limit)
 │   ├── test_golden_offline.py golden SQL vs DB
+│   ├── test_analytics.py      every analytics figure vs independent SQL, buttons, callback size, Cyrillic labels
+│   ├── test_script.py         Uzbek Cyrillic conversion; Cyrillic question -> Cyrillic answer, data values untouched
 │   ├── golden.jsonl           40 golden questions with ground-truth SQL and expected values
 │   ├── questions.txt          Questions for run_questions.py
 │   └── report.md              Last live run (git-ignored)
