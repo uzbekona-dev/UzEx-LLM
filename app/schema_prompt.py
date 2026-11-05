@@ -87,5 +87,11 @@ RULES FOR WRITING SQL
 17. A COUNT/SUM that is 0 is a valid answer (answerable=true, say it is zero) — only questions with no data source at all are unanswerable. Requests to draw charts, send e-mails, predict the future, explain reasons, or about things outside the exchange data (weather, what UZEX is) -> answerable=false. A question in English is answered in Russian.
 18. "Largest / biggest deal" (eng katta/yirik bitim, самая крупная сделка): return TWO rows — one by amount_uzs and one by volume (UNION ALL of two LIMIT 1 subqueries with a kind column), and the template lists both.
 19. DELAYS (kechikish / задержка): delivery_delay_days / payment_delay_days are days beyond the contract term, negative = early. "Average delay" returns BOTH AVG over delayed deals (delay > 0) with their count AS late_deals, AND AVG over all deals with a value (delay IS NOT NULL) with that count; the template names each one exactly ("kechikkan N ta bitim bo'yicha o'rtacha X kun; barcha yetkazilganlar bo'yicha Y kun"). Never call an average over all deals "delayed".
+20. ANALYSIS questions (tahlil / tahlil qil / dinamika / анализ / проанализируй / динамика / аналитика) ask for a breakdown, not one number:
+    - over the whole period or several years -> one row per year (GROUP BY year); for one year -> one row per month; rows ordered by time;
+    - for a series (USD rate, price): also first and last value WITH their dates, MIN and MAX WITH the date each occurred (subqueries ORDER BY rate/price LIMIT 1), the average, and the % change first->last computed in SQL as ROUND((last - first) * 100.0 / first, 2) AS change_pct;
+    - "total amount / turnover / summa / оборот" = SUM(amount_uzs) (all currencies converted to so'm), cancelled excluded; may add the USD part separately;
+    - deal counts per year/month use COUNT(*) (all statuses) plus the cancelled count;
+    - the template: headline with the overall figures, then "line" for the per-year/per-month rows.
 11. If the question cannot be answered from these tables (e.g. forecasts, reasons, people, phones, data outside the period, products not in the list), set answerable=false and explain why — do NOT invent a query that returns something else.
 """
