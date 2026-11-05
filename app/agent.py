@@ -26,6 +26,7 @@ from app.llm import Llm, LlmDeadline
 from app.pseudonym import Masked, Pseudonymizer
 from app.render import RenderSpec, check_template, render
 from app.schema_prompt import RULES, SCHEMA_DOC
+from app.script import UZ_CYR, is_cyrillic, lat_to_cyr
 from app.sql_guard import QueryResult, open_db, run_query
 from app.verify import verify_answer
 
@@ -152,20 +153,32 @@ def _parse_json(text: str) -> dict:
     raise PlanError("reply is not a JSON object")
 
 
+def _uz(text: str, lang: str) -> str:
+    """Our Uzbek wording in the user's script."""
+    return lat_to_cyr(text) if lang == UZ_CYR else text
+
+
 def _no_data_message(lang: str, reason: str) -> str:
-    if lang == "uz":
-        return f"Ma'lumotlarda bu savolga javob yo'q. {reason}".strip()
+    if lang in ("uz", UZ_CYR):
+        return _uz(f"Ma'lumotlarda bu savolga javob yo'q. {reason}".strip(), lang)
     return f"В данных нет ответа на этот вопрос. {reason}".strip()
 
 
 def _timeout_message(lang: str) -> str:
-    if lang == "uz":
-        return "Kechirasiz, javobni vaqtida tayyorlay olmadim (model javob bermadi). Iltimos, savolni qayta yuboring."
+    if lang in ("uz", UZ_CYR):
+        return _uz("Kechirasiz, javobni vaqtida tayyorlay olmadim (model javob bermadi). "
+                   "Iltimos, savolni qayta yuboring.", lang)
     return "Извините, не успел подготовить ответ (модель не ответила вовремя). Пожалуйста, отправьте вопрос ещё раз."
 
 
+_UZ_CYR_LETTERS_RE = re.compile(r"[ўқғҳЎҚҒҲ]|\b(битим|йил|нечта|қанча|бўйича|сотилган|ҳудуд|вилоят)\w*", re.I)
+
+
 def _guess_language(question: str) -> str:
-    return "ru" if re.search(r"[а-яё]", question, re.I) and not re.search(r"[qoʻ'‘ʼ]", question) else "uz"
+    """Used only when the planner gave no language (timeouts)."""
+    if is_cyrillic(question):
+        return UZ_CYR if _UZ_CYR_LETTERS_RE.search(question) else "ru"
+    return "uz"
 
 
 def record_qa(ans: AgentAnswer, extra: dict | None = None, path: str = QA_LOG_PATH) -> None:
@@ -392,12 +405,15 @@ class Agent:
         plan, result, spec = self._plan_and_query(con, masked, history, deadline, debug)
         lang = plan.get("language") or _guess_language(question)
         interpretation = masked.unmask(str(plan.get("interpretation", "")))
+        if lang == "uz" and is_cyrillic(question):  # answer in the script the user wrote in
+            lang = UZ_CYR
+            interpretation = lat_to_cyr(interpretation)
         if result is None:
             reason = masked.unmask(str(plan.get("reason", "")))
             return AgentAnswer(question, lang, _no_data_message(lang, reason), interpretation, None, [], [],
                                False, True, time.monotonic() - started, debug)
         if not result.ok:
-            msg = ("So'rovni tuza olmadim, iltimos savolni boshqacha ifodalang." if lang == "uz"
+            msg = (_uz("So'rovni tuza olmadim, iltimos savolni boshqacha ifodalang.", lang) if lang in ("uz", UZ_CYR)
                    else "Не удалось построить запрос, пожалуйста, переформулируйте вопрос.")
             return AgentAnswer(question, lang, msg, interpretation, result.sql, [], [],
                                True, False, time.monotonic() - started, debug)

@@ -13,6 +13,7 @@ from __future__ import annotations
 import re
 
 from app.agent import AgentAnswer
+from app.script import UZ_CYR, lat_to_cyr
 
 MAX_SQL_CHARS = 700
 EVIDENCE_OPEN = "<blockquote expandable>"
@@ -39,6 +40,12 @@ LABELS = {
 }
 
 
+def _labels(lang: str) -> dict[str, str]:
+    if lang == UZ_CYR:
+        return {k: lat_to_cyr(v) for k, v in LABELS["uz"].items()}
+    return LABELS["uz" if lang == "uz" else "ru"]
+
+
 def escape_html(text: str) -> str:
     return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
 
@@ -49,7 +56,7 @@ def answer_html(text: str) -> str:
 
 
 def render(ans: AgentAnswer, *, show_sql: bool = True) -> str:
-    labels = LABELS["uz" if ans.language == "uz" else "ru"]
+    labels = _labels(ans.language)
     parts = [answer_html(ans.answer)]
     if not ans.answerable:
         parts.append(f"\nℹ️ {labels['no_data']} · {ans.elapsed_sec:.1f} s")
@@ -71,7 +78,7 @@ def render(ans: AgentAnswer, *, show_sql: bool = True) -> str:
 
 def render_plain(ans: AgentAnswer) -> str:
     """CLI variant without HTML."""
-    labels = LABELS["uz" if ans.language == "uz" else "ru"]
+    labels = _labels(ans.language)
     out = [ans.answer.replace("**", "")]
     if ans.interpretation:
         out.append(f"{labels['interp']}: {ans.interpretation}")

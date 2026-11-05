@@ -78,6 +78,15 @@ ERROR_MSG = (
     "⚠️ Texnik xatolik yuz berdi, iltimos bir ozdan keyin qayta urinib ko'ring.\n"
     "⚠️ Произошла техническая ошибка, попробуйте ещё раз через минуту."
 )
+# Shown on the bot's profile / empty chat before /start (Telegram limits: 512 and 120 chars).
+DESCRIPTION = (
+    "UZEX birja bitimlari bo'yicha AI-yordamchi: 2022–2026, 500 000 bitim. O'zbek yoki rus tilida savol "
+    "bering — javob faqat ma'lumotlardan, asosi va SQL bilan; ma'lumotda bo'lmasa, o'ylab topmaydi.\n\n"
+    "AI-ассистент по биржевым сделкам UZEX: 2022–2026, 500 000 сделок. Спросите на русском или узбекском — "
+    "ответ только по данным, с основанием и SQL; чего нет в данных, не придумывает."
+)
+SHORT_DESCRIPTION = "UZEX bitimlari bo'yicha AI-yordamchi · AI-ассистент по сделкам UZEX (uz / ru)"
+
 COMMANDS = [
     BotCommand(command="start", description="Boshlash / Начать"),
     BotCommand(command="help", description="Nima so'rash mumkin / Что можно спросить"),
@@ -191,6 +200,15 @@ async def _edit_or_resend(progress: Message, text: str, parse_mode: str | None =
         await progress.answer(text, parse_mode=parse_mode)
 
 
+async def _set_profile(bot: Bot) -> None:
+    """Profile texts are cosmetic: never let a Telegram hiccup here stop the bot."""
+    try:
+        await bot.set_my_description(DESCRIPTION)
+        await bot.set_my_short_description(SHORT_DESCRIPTION)
+    except Exception:  # noqa: BLE001
+        log.warning("could not set bot description", exc_info=True)
+
+
 def build_agent() -> Agent:
     db_path = os.environ.get("DB_PATH", "data/uzex.db")
     return Agent(None, Llm(), db_path=db_path, resolver=build_resolver(db_path))
@@ -213,6 +231,7 @@ async def run() -> None:
     bot = Bot(token=token, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
     dp = build_dispatcher(build_agent())
     await bot.set_my_commands(COMMANDS)
+    await _set_profile(bot)
     log.info("bot started")
     try:
         await dp.start_polling(bot, drop_pending_updates=True)

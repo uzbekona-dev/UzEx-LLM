@@ -13,6 +13,7 @@ import re
 from dataclasses import dataclass, field
 
 from app.dictionaries import CONTRACT_FORMS, CONTRACT_TYPES, CURRENCIES, DEAL_STATUSES, TRADE_TYPES, UNITS
+from app.script import UZ_CYR, base_lang, lat_to_cyr
 from app.verify import extract_numbers
 
 MAX_LINES = 10
@@ -87,6 +88,8 @@ def format_value(value: object, modifier: str | None, lang: str, column: str = "
     text = str(value)
     if modifier == "date" or (modifier is None and "date" in column.lower()):
         return format_date(text)
+    if lang == UZ_CYR:
+        return lat_to_cyr(_UZ_LABELS[text]) if text in _UZ_LABELS else text  # our label, not data
     if lang == "uz":
         return _UZ_LABELS.get(text, text)
     return _RU_LABELS.get(text, text)
@@ -131,7 +134,8 @@ def _fill(template: str, row: dict, row_count: int, lang: str) -> str:
 def render_template(spec: RenderSpec, columns: list[str], rows: list[tuple], lang: str) -> str:
     records = [dict(zip(columns, r)) for r in rows]
     if not records:
-        return spec.empty or ("Ma'lumotlarda mos yozuv topilmadi." if lang == "uz" else "В данных подходящих записей нет.")
+        return spec.empty or _own("Ma'lumotlarda mos yozuv topilmadi.", lang) if base_lang(lang) == "uz" \
+            else (spec.empty or "В данных подходящих записей нет.")
     parts: list[str] = []
     # several rows but no per-row template: repeat the headline per row so no row is silently dropped
     line = spec.line or (spec.headline if len(records) > 1 else "")
@@ -178,7 +182,7 @@ def _label(column: str, lang: str) -> str:
     low = column.lower()
     for key, uz, ru in _COLUMN_LABELS:
         if key in low:
-            return uz if lang == "uz" else ru
+            return _own(uz, lang) if base_lang(lang) == "uz" else ru
     return column.replace("_", " ").capitalize()
 
 
@@ -202,11 +206,12 @@ def render_generic(columns: list[str], rows: list[tuple], lang: str) -> str:
     Never wrong (values only from rows), just less fluent than a template.
     """
     if not rows:
-        return "Ma'lumotlarda mos yozuv topilmadi." if lang == "uz" else "В данных подходящих записей нет."
+        return _own("Ma'lumotlarda mos yozuv topilmadi.", lang) if base_lang(lang) == "uz" else "В данных подходящих записей нет."
     pairs = _pair_units(columns)
     hidden = set(pairs.values())
     titles = [c for c in columns if c in _TITLE_COLUMNS and c not in hidden][:2]
-    head = "__Natija (ma'lumotlardan to'g'ridan-to'g'ri):__" if lang == "uz" else "__Результат (напрямую из данных):__"
+    head = (_own("__Natija (ma'lumotlardan to'g'ridan-to'g'ri):__", lang) if base_lang(lang) == "uz"
+            else "__Результат (напрямую из данных):__")
     lines = [head]
     for i, row in enumerate(rows[:MAX_LINES], 1):
         rec = dict(zip(columns, row))
@@ -227,7 +232,14 @@ def render_generic(columns: list[str], rows: list[tuple], lang: str) -> str:
     return "\n".join(lines)
 
 
+def _own(text: str, lang: str) -> str:
+    """Our own Uzbek wording, converted to Cyrillic when the question was written in Cyrillic."""
+    return lat_to_cyr(text) if lang == UZ_CYR else text
+
+
 def render(spec: RenderSpec, columns: list[str], rows: list[tuple], lang: str, context: str) -> Rendered:
+    if lang == UZ_CYR:  # convert the template wording before the data values are filled in
+        spec = RenderSpec(*(lat_to_cyr(t) for t in (spec.headline, spec.line, spec.empty, spec.note)))
     problems = check_template(spec, columns, context)
     if problems:
         return Rendered(render_generic(columns, rows, lang), False, problems)
