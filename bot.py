@@ -5,10 +5,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import traceback
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from aiogram import Bot, Dispatcher, F, Router
+from aiogram import BaseMiddleware, Bot, Dispatcher, F, Router
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
 from aiogram.exceptions import TelegramBadRequest
@@ -25,6 +26,7 @@ from aiogram.utils.chat_action import ChatActionSender
 from dotenv import load_dotenv
 
 from app import analytics
+from app.events import log_event
 from app.agent import Agent, AgentAnswer, record_qa
 from app.entities import EntityResolver
 from app.format import EVIDENCE_OPEN, answer_html, render
@@ -198,11 +200,17 @@ async def _answer(message: Message, agent: Agent, chat_history: ChatHistory, que
             chat_history.add(chat_id, question, ans.interpretation)
         parts = split_message(render(ans))
         markup = _analytics_markup(agent, ans)
+        log_event("answer", message.from_user, message.chat, question=question, answer=ans.answer,
+                  interpretation=ans.interpretation, sql=ans.sql, rows=len(ans.rows), language=ans.language,
+                  answerable=ans.answerable, verified=ans.verified, used_template=ans.used_template,
+                  timed_out=ans.timed_out, elapsed_sec=round(ans.elapsed_sec, 1),
+                  buttons=[row[0].callback_data for row in markup.inline_keyboard] if markup else [])
         await _edit_or_resend(progress, parts[0], reply_markup=markup if len(parts) == 1 else None)
         for i, part in enumerate(parts[1:], 2):
             await message.answer(part, reply_markup=markup if i == len(parts) else None)
     except Exception:  # never let one question kill the polling loop
         log.exception("failed on %r", question)
+        log_event("error", message.from_user, message.chat, question=question, error=traceback.format_exc()[-1500:])
         await _edit_or_resend(progress, ERROR_MSG, parse_mode=None)
 
 
@@ -240,7 +248,8 @@ async def on_analytics(callback: CallbackQuery, agent: Agent) -> None:
     if not parsed or callback.message is None or not agent.db_path:
         return
     lang, target = parsed
-    await _send_report(callback.message, lambda: _run_report(agent.db_path, target, lang))
+    await _send_report(callback.message, lambda: _run_report(agent.db_path, target, lang),
+                       user=callback.from_user, what=callback.data or "")
 
 
 @router.message(Command("statistika", "stats"))
@@ -248,7 +257,8 @@ async def on_statistics(message: Message, agent: Agent) -> None:
     if not ANALYTICS or not agent.db_path:
         return
     lang = "ru" if message.from_user and (message.from_user.language_code or "").startswith("ru") else "uz"
-    await _send_report(message, lambda: analytics.overview_report(agent.db_path, lang))
+    await _send_report(message, lambda: analytics.overview_report(agent.db_path, lang),
+                       user=message.from_user, what=f"/statistika ({lang})")
 
 
 def _run_report(db_path: str, target: analytics.Target, lang: str) -> str:
@@ -259,14 +269,16 @@ def _run_report(db_path: str, target: analytics.Target, lang: str) -> str:
         con.close()
 
 
-async def _send_report(message: Message, build) -> None:
+async def _send_report(message: Message, build, *, user=None, what: str = "") -> None:
     async with ChatActionSender.typing(bot=message.bot, chat_id=message.chat.id):
         try:
             text = await asyncio.to_thread(build)
         except Exception:  # noqa: BLE001 - analytics must never break the bot
             log.exception("analytics report failed")
+            log_event("report_error", user, message.chat, what=what, error=traceback.format_exc()[-1500:])
             await message.answer(ANALYTICS_ERROR, parse_mode=None)
             return
+    log_event("report", user, message.chat, what=what, text=text)
     for part in split_message(answer_html(text)):
         await message.answer(part)
 
@@ -289,8 +301,24 @@ def build_resolver(db_path: str) -> EntityResolver:
     return EntityResolver(open_db(db_path))
 
 
+class EventLogger(BaseMiddleware):
+    """Logs every incoming message and button press (who, when, what) before it is handled."""
+
+    async def __call__(self, handler, event, data):
+        if isinstance(event, Message):
+            text = event.text or event.caption
+            log_event("message", event.from_user, event.chat, message_id=event.message_id,
+                      content_type=str(event.content_type), text=text,
+                      command=text.split()[0] if text and text.startswith("/") else None)
+        elif isinstance(event, CallbackQuery):
+            log_event("button", event.from_user, event.message.chat if event.message else None, data=event.data)
+        return await handler(event, data)
+
+
 def build_dispatcher(agent: Agent) -> Dispatcher:
     dp = Dispatcher(agent=agent, chat_locks=ChatLocks(), chat_history=ChatHistory())
+    dp.message.outer_middleware(EventLogger())
+    dp.callback_query.outer_middleware(EventLogger())
     dp.include_router(router)
     return dp
 
