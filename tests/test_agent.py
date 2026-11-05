@@ -186,3 +186,30 @@ def test_active_only_deal_count_is_sent_back_for_total() -> None:
     ans = Agent(None, llm, db_path=DB).ask("Сколько сделок по муке заключили покупатели из Самаркандской области?")
     assert "Всего **2 150** сделок, из них 2 004 действующих" in ans.answer
     assert "deals_total" in llm.calls[1]
+
+
+def test_cancelled_counted_inside_filter_is_sent_back() -> None:
+    bad_sql = ("SELECT SUM(amount_uzs) AS total_amount_uzs, COUNT(*) AS deals_total, "
+               "SUM(CASE WHEN is_cancelled = 0 THEN 1 ELSE 0 END) AS deals_active, "
+               "SUM(CASE WHEN is_cancelled = 1 THEN 1 ELSE 0 END) AS cancelled_deals FROM deals WHERE year = 2025 AND is_cancelled = 0")
+    good_sql = ("SELECT SUM(CASE WHEN is_cancelled = 0 THEN amount_uzs END) AS total_amount_uzs, COUNT(*) AS deals_total, "
+                "SUM(CASE WHEN is_cancelled = 0 THEN 1 ELSE 0 END) AS deals_active, SUM(is_cancelled) AS cancelled_deals "
+                "FROM deals WHERE year = 2025")
+    render_spec = {"headline": "Summa **{total_amount_uzs}** so'm ({deals_total} ta bitimdan {deals_active} tasi amalda).",
+                   "note": "Bekor qilingan {cancelled_deals} ta bitim hisobga olinmadi."}
+    bad = {"language": "uz", "answerable": True, "interpretation": "x", "sql": bad_sql, "render": render_spec}
+    good = {**bad, "sql": good_sql}
+    llm = ScriptedLlm([json.dumps(bad), json.dumps(good)])
+    ans = Agent(None, llm, db_path=DB).ask("2025 yilda jami savdo summasi qancha?")
+    assert "115 763 ta bitimdan 107 678 tasi amalda" in ans.answer and "Bekor qilingan 8 085 ta" in ans.answer
+    assert "WHERE clause already removes cancelled" in llm.calls[1]
+
+
+def test_subquery_cancelled_count_is_accepted() -> None:
+    from app.agent import _cancelled_problems
+    from app.render import RenderSpec
+    from app.sql_guard import QueryResult
+    sql = ("SELECT unit, SUM(volume) AS total_volume, (SELECT COUNT(*) FROM deals WHERE tnved = '520100' AND year = 2024 "
+           "AND is_cancelled = 1) AS cancelled_deals FROM deals WHERE tnved = '520100' AND year = 2024 AND is_cancelled = 0 GROUP BY unit")
+    result = QueryResult(sql=sql, columns=["unit", "total_volume", "cancelled_deals"], rows=[("килограмм", 1.0, 1958)], elapsed_sec=0)
+    assert _cancelled_problems(sql, RenderSpec(headline="{total_volume}", note="{cancelled_deals} bekor"), result) == []

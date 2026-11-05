@@ -218,10 +218,27 @@ _EXCLUDES_CANCELLED_RE = re.compile(r"is_cancelled\s*=\s*0", re.I)
 _AGGREGATE_RE = re.compile(r"\b(SUM|COUNT|AVG)\s*\(", re.I)
 
 
+_WHERE_EXCLUDES_CANCELLED_RE = re.compile(
+    r"\bWHERE\b(?:(?!\bSELECT\b|\bCASE\b).)*?\bis_cancelled\s*=\s*0", re.I | re.S)  # top-level WHERE, not inside CASE
+
+
 def _cancelled_problems(sql: str, spec: RenderSpec, result: QueryResult) -> list[str]:
     """An aggregate that silently drops cancelled deals must also report how many were dropped (rule 7)."""
     if not result.rows or not _EXCLUDES_CANCELLED_RE.search(sql) or not _AGGREGATE_RE.search(sql):
         return []
+    if _WHERE_EXCLUDES_CANCELLED_RE.search(sql):
+        # Counting inside a WHERE that already removed cancelled deals gives 0 cancelled and total == active:
+        # a true-looking but false statement. Those counts must come from the unfiltered set.
+        broken = [c for c in result.columns if "cancel" in c.lower() and all(not r[result.columns.index(c)] for r in result.rows)]
+        totals = [c for c in result.columns if "total" in c.lower() and "deal" in c.lower()]
+        actives = [c for c in result.columns if "active" in c.lower()]
+        same = totals and actives and all(r[result.columns.index(totals[0])] == r[result.columns.index(actives[0])]
+                                          for r in result.rows)
+        if broken or same:
+            return ["the WHERE clause already removes cancelled deals (is_cancelled = 0), so counting cancelled or total "
+                    "deals inside it gives 0 / the active number. Move the filter into CASE expressions "
+                    "(SUM(CASE WHEN is_cancelled = 0 THEN amount_uzs END), COUNT(*) AS deals_total, "
+                    "SUM(is_cancelled) AS cancelled_deals) without is_cancelled in WHERE"]
     if any("cancel" in c.lower() for c in result.columns):
         if any("cancel" in t for t in spec.texts()):
             return []
