@@ -35,6 +35,9 @@ MAX_SQL_ATTEMPTS = 3
 START_BUDGET_SEC = float(os.environ.get("ANSWER_BUDGET_SEC", "45"))  # no new LLM call after this (+40 s call timeout < 90 s)
 HISTORY_TURNS = 2
 SQL_CRITIC = os.environ.get("SQL_CRITIC", "1") not in ("0", "false", "no")
+# Gemini "thinking" level per call: low ~2x faster than the model default; "default" = model default
+PLAN_THINKING = os.environ.get("PLAN_THINKING", "low")
+CRITIC_THINKING = os.environ.get("CRITIC_THINKING", "low")
 
 CRITIC_SYSTEM = f"""You review ONE SQLite query written for a question about exchange deals. You do not see data.
 {SCHEMA_DOC}
@@ -304,7 +307,7 @@ class Agent:
         user += f"QUESTION: {masked.question}"
         if feedback:
             user += f"\n\nPREVIOUS ATTEMPT FAILED: {feedback}\nFix it."
-        resp = self.llm.complete(PLAN_SYSTEM, user, json_mode=True, deadline=deadline)
+        resp = self.llm.complete(PLAN_SYSTEM, user, json_mode=True, deadline=deadline, thinking=PLAN_THINKING)
         return _parse_json(resp.text)
 
     def _plan_and_query(
@@ -349,7 +352,7 @@ class Agent:
         user = (f"QUESTION: {masked.question}\nINTERPRETATION: {plan.get('interpretation', '')}\n"
                 f"SQL:\n{plan['sql']}\nRESULT COLUMNS: {result.columns}  ROWS RETURNED: {len(result.rows)}")
         try:
-            verdict = _parse_json(self.llm.complete(CRITIC_SYSTEM, user, json_mode=True, deadline=deadline).text)
+            verdict = _parse_json(self.llm.complete(CRITIC_SYSTEM, user, json_mode=True, deadline=deadline, thinking=CRITIC_THINKING).text)
         except (PlanError, LlmDeadline) as exc:
             debug.append(f"critic skipped: {exc}")
             return plan, result

@@ -27,6 +27,15 @@ def _import(module: str, pip_name: str):
         raise ProviderSkip(f"{pip_name} SDK not installed (pip install {pip_name})") from exc
 
 
+def _gemini_thinking(types, thinking):
+    """'low' / 'minimal' / 'medium' / 'high' -> thinking_level; '0' / 'off' -> no thinking; None -> model default."""
+    if not thinking or thinking == "default":
+        return None
+    if thinking in ("0", "off", "none"):
+        return types.ThinkingConfig(thinking_budget=0)
+    return types.ThinkingConfig(thinking_level=thinking)
+
+
 class GeminiProvider:
     """Google Gemini via google-genai."""
 
@@ -41,16 +50,24 @@ class GeminiProvider:
             self._client = genai.Client(api_key=self._api_key, http_options=http)
         return self._client
 
-    def complete(self, model, system, user, *, temperature=0.0, json_mode=False) -> LlmResponse:
+    def complete(self, model, system, user, *, temperature=0.0, json_mode=False, thinking=None) -> LlmResponse:
         client = self._get_client()
         from google.genai import types
 
-        config = types.GenerateContentConfig(
-            system_instruction=system,
-            temperature=temperature,
-            response_mime_type="application/json" if json_mode else "text/plain",
-        )
-        resp = client.models.generate_content(model=model, contents=user, config=config)
+        def make_config(think):
+            return types.GenerateContentConfig(
+                system_instruction=system,
+                temperature=temperature,
+                response_mime_type="application/json" if json_mode else "text/plain",
+                thinking_config=_gemini_thinking(types, think),
+            )
+
+        try:
+            resp = client.models.generate_content(model=model, contents=user, config=make_config(thinking))
+        except Exception as exc:  # noqa: BLE001 - some models reject thinking settings: retry once without them
+            if not thinking or "think" not in str(exc).lower():
+                raise
+            resp = client.models.generate_content(model=model, contents=user, config=make_config(None))
         usage = resp.usage_metadata
         return LlmResponse(
             text=resp.text or "",
@@ -72,7 +89,7 @@ class AnthropicProvider:
             self._client = anthropic.Anthropic(api_key=self._api_key, timeout=REQUEST_TIMEOUT_SEC, max_retries=0)
         return self._client
 
-    def complete(self, model, system, user, *, temperature=0.0, json_mode=False) -> LlmResponse:
+    def complete(self, model, system, user, *, temperature=0.0, json_mode=False, thinking=None) -> LlmResponse:
         client = self._get_client()
         resp = client.messages.create(
             model=model,
@@ -105,7 +122,7 @@ class OpenAIProvider:
             )
         return self._client
 
-    def complete(self, model, system, user, *, temperature=0.0, json_mode=False) -> LlmResponse:
+    def complete(self, model, system, user, *, temperature=0.0, json_mode=False, thinking=None) -> LlmResponse:
         client = self._get_client()
         kwargs = {"response_format": {"type": "json_object"}} if json_mode else {}
         resp = client.chat.completions.create(

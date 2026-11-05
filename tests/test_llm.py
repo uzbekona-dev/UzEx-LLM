@@ -157,3 +157,27 @@ def test_is_retryable(exc: Exception, expected: bool) -> None:
 ])
 def test_strip_fences(raw: str, expected: str) -> None:
     assert strip_fences(raw) == expected
+
+
+class ThinkingProvider(FakeProvider):
+    def complete(self, model, system, user, *, temperature=0.0, json_mode=False, thinking=None) -> LlmResponse:
+        self.thinking = thinking
+        return super().complete(model, system, user, temperature=temperature, json_mode=json_mode)
+
+
+def test_thinking_level_is_passed_to_the_provider() -> None:
+    provider = ThinkingProvider()
+    llm = Llm("gemini:m1", env=_env(GEMINI_API_KEY="k"), providers={"gemini": provider})
+    llm.complete("s", "u", thinking="low")
+    assert provider.thinking == "low"
+    llm.complete("s", "u")
+    assert provider.thinking is None
+
+
+def test_gemini_thinking_mapping() -> None:
+    from google.genai import types
+
+    from app.llm.providers import _gemini_thinking
+    assert _gemini_thinking(types, None) is None and _gemini_thinking(types, "default") is None
+    assert _gemini_thinking(types, "low").thinking_level.lower().endswith("low")
+    assert _gemini_thinking(types, "0").thinking_budget == 0

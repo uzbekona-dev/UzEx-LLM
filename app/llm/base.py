@@ -34,6 +34,7 @@ class Provider(Protocol):
         *,
         temperature: float = 0.0,
         json_mode: bool = False,
+        thinking: str | None = None,
     ) -> LlmResponse: ...
 
 

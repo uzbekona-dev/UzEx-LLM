@@ -104,6 +104,7 @@ class Llm:
         temperature: float = 0.0,
         json_mode: bool = False,
         deadline: float | None = None,
+        thinking: str | None = None,
     ) -> LlmResponse:
         """`deadline` is a time.monotonic() value: no new attempt is started after it."""
         last_error: Exception | None = None
@@ -114,7 +115,8 @@ class Llm:
                     raise LlmDeadline(f"LLM budget exhausted before {entry} attempt {attempt}: {last_error}")
                 try:
                     resp = provider.complete(
-                        entry.model, system, user, temperature=temperature, json_mode=json_mode
+                        entry.model, system, user, temperature=temperature, json_mode=json_mode,
+                        **({'thinking': thinking} if thinking else {}),
                     )
                 except Exception as exc:  # noqa: BLE001 - vendors raise many types
                     last_error = exc

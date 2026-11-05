@@ -39,7 +39,7 @@ class ScriptedLlm:
         self.calls: list[str] = []
         self.slow = slow
 
-    def complete(self, system: str, user: str, *, temperature: float = 0.0, json_mode: bool = False, deadline: float | None = None) -> LlmResponse:
+    def complete(self, system: str, user: str, *, temperature: float = 0.0, json_mode: bool = False, deadline: float | None = None, thinking: str | None = None) -> LlmResponse:
         if deadline is not None and time.monotonic() > deadline:
             raise LlmDeadline("budget exhausted")
         self.calls.append(user)
