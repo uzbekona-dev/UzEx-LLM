@@ -14,7 +14,7 @@ from dataclasses import dataclass, field
 
 from app.dictionaries import CONTRACT_FORMS, CONTRACT_TYPES, CURRENCIES, DEAL_STATUSES, TRADE_TYPES, UNITS
 from app.script import UZ_CYR, base_lang, lat_to_cyr
-from app.verify import extract_numbers
+from app.verify import extract_numbers, strip_data_years
 
 MAX_LINES = 10
 THIN = " "
@@ -106,7 +106,7 @@ def check_template(spec: RenderSpec, columns: list[str], context: str) -> list[s
             name = m.group(1)
             if name not in known and not _ENTITY_RE.match(name):
                 problems.append(f"unknown column {{{name}}}")
-        stripped = _PLACEHOLDER_RE.sub(" ", text)
+        stripped = strip_data_years(_PLACEHOLDER_RE.sub(" ", text))
         for value in extract_numbers(stripped):
             if value <= 12 and value.is_integer():
                 continue

@@ -213,3 +213,30 @@ def test_subquery_cancelled_count_is_accepted() -> None:
            "AND is_cancelled = 1) AS cancelled_deals FROM deals WHERE tnved = '520100' AND year = 2024 AND is_cancelled = 0 GROUP BY unit")
     result = QueryResult(sql=sql, columns=["unit", "total_volume", "cancelled_deals"], rows=[("килограмм", 1.0, 1958)], elapsed_sec=0)
     assert _cancelled_problems(sql, RenderSpec(headline="{total_volume}", note="{cancelled_deals} bekor"), result) == []
+
+
+def test_data_period_years_in_template_are_wording_not_figures() -> None:
+    plan = {"language": "uz", "answerable": True, "interpretation": "x",
+            "sql": "SELECT COUNT(*) AS deals_total FROM deals WHERE tnved = '520100'",
+            "render": {"headline": "2022–2026-yillarda paxta bo'yicha jami **{deals_total} ta** bitim (2026-yil 30-oktyabrgacha)."}}
+    ans = Agent(None, ScriptedLlm([json.dumps(plan)]), db_path=DB).ask("paxta bo'yicha jami bitimlar")
+    assert ans.used_template and "**136 208 ta** bitim" in ans.answer
+
+
+def test_invented_count_that_looks_like_a_year_is_still_rejected() -> None:
+    from app.verify import strip_data_years, verify_answer
+    assert verify_answer("2025 ta bitim", [(5,)], "q").ok is False
+    assert verify_answer("2 025 ta bitim", [(5,)], "q").ok is False
+    stripped = strip_data_years("2024-yil, в 2023 году, 2022–2026")
+    assert not any(y in stripped for y in ("2022", "2023", "2024", "2026"))
+
+
+def test_sql_column_error_feedback_lists_real_columns() -> None:
+    bad = {"language": "uz", "answerable": True, "interpretation": "x",
+           "sql": "WITH p AS (SELECT tnved, unit_price FROM deals) SELECT tnved FROM p ORDER BY deal_no LIMIT 1",
+           "render": {"headline": "{tnved}"}}
+    good = {**bad, "sql": "WITH p AS (SELECT tnved, unit_price, deal_no FROM deals) SELECT tnved FROM p ORDER BY deal_no LIMIT 1"}
+    llm = ScriptedLlm([json.dumps(bad), json.dumps(good)])
+    ans = Agent(None, llm, db_path=DB).ask("q")
+    assert ans.answerable and ans.rows
+    assert "no such column" in llm.calls[1] and "deals(deal_no" in llm.calls[1] and "exposes only the columns" in llm.calls[1]

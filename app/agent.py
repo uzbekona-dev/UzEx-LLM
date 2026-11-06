@@ -35,6 +35,8 @@ log = logging.getLogger(__name__)
 MAX_SQL_ATTEMPTS = 3
 START_BUDGET_SEC = float(os.environ.get("ANSWER_BUDGET_SEC", "45"))  # no new LLM call after this (+40 s call timeout < 90 s)
 HISTORY_TURNS = 2
+# Facts about the data itself (period and its years) may appear in our wording without coming from the rows.
+DATA_CONTEXT = "2022-01-03 2026-10-30"  # the data period: dates our wording may cite
 SQL_CRITIC = os.environ.get("SQL_CRITIC", "1") not in ("0", "false", "no")
 # Gemini "thinking" level per call: low ~2x faster than the model default; "default" = model default
 PLAN_THINKING = os.environ.get("PLAN_THINKING", "low")
@@ -247,6 +249,21 @@ def _cancelled_problems(sql: str, spec: RenderSpec, result: QueryResult) -> list
             "(SELECT COUNT(*) FROM deals WHERE <same filters> AND is_cancelled = 1) AS cancelled_deals) and show it in the note"]
 
 
+def _schema_hint(con: sqlite3.Connection, error: str | None) -> str:
+    """For 'no such column/table' errors give the model the real columns, and remind it that a CTE only
+    exposes the columns it selects."""
+    if not error or not re.search(r"no such (column|table)", error):
+        return ""
+    try:
+        tables = [r[0] for r in con.execute("SELECT name FROM sqlite_master WHERE type = 'table' ORDER BY name")]
+        cols = {t: [r[1] for r in con.execute(f"PRAGMA table_info({t})")] for t in tables}
+    except sqlite3.Error:
+        return ""
+    listing = "; ".join(f"{t}({', '.join(c)})" for t, c in cols.items())
+    return (f". Real columns: {listing}. A CTE/subquery exposes only the columns it SELECTs: add the missing column "
+            "to every CTE that a later step orders, filters or joins by.")
+
+
 _SLOT_RE = re.compile(r"\{[^{}]*\}")
 
 
@@ -372,11 +389,11 @@ class Agent:
             sql = masked.substitute_sql(str(plan["sql"]))
             result = run_query(con, sql)
             if not result.ok:
-                feedback = f"SQL error: {result.error}"
+                feedback = f"SQL error: {result.error}" + _schema_hint(con, result.error)
                 debug.append(feedback)
                 continue
             spec = RenderSpec.from_plan(plan.get("render"))
-            problems = check_template(spec, result.columns, f"{masked.question}\n{plan['sql']}")
+            problems = check_template(spec, result.columns, f"{masked.question}\n{plan['sql']}\n{DATA_CONTEXT}")
             problems += _tonne_problems(masked.question, spec, result)
             problems += _cancelled_problems(str(plan["sql"]), spec, result)
             problems += _deal_total_problems(spec, result)
@@ -449,10 +466,10 @@ class Agent:
             return AgentAnswer(question, lang, msg, interpretation, result.sql, [], [],
                                True, False, time.monotonic() - started, debug)
 
-        rendered = render(spec, result.columns, result.rows, lang, f"{masked.question}\n{result.sql}")
+        rendered = render(spec, result.columns, result.rows, lang, f"{masked.question}\n{result.sql}\n{DATA_CONTEXT}")
         answer = masked.unmask(rendered.text)
         debug.append(f"render: template={rendered.used_template} problems={rendered.problems}")
-        check = verify_answer(answer, result.rows, f"{question}\n{result.sql}")
+        check = verify_answer(answer, result.rows, f"{question}\n{result.sql}\n{DATA_CONTEXT}")
         debug.append(f"verify: ok={check.ok} unsupported={check.problems[:5]}")
         used_template = rendered.used_template
         if not check.ok and used_template:  # belt and braces: never ship unverified prose

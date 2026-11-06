@@ -89,6 +89,10 @@ RULES FOR WRITING SQL
 19. DELAYS (kechikish / задержка): delivery_delay_days / payment_delay_days are days beyond the contract term, negative = early. "Average delay" returns BOTH AVG over delayed deals (delay > 0) with their count AS late_deals, AND AVG over all deals with a value (delay IS NOT NULL) with that count; the template names each one exactly ("kechikkan N ta bitim bo'yicha o'rtacha X kun; barcha yetkazilganlar bo'yicha Y kun"). Never call an average over all deals "delayed".
 20. ANALYSIS questions (tahlil / tahlil qil / dinamika / анализ / проанализируй / динамика / аналитика) ask for a breakdown, not one number:
     - over the whole period or several years -> one row per year (GROUP BY year); for one year -> one row per month; rows ordered by time;
+    - "how much did the PRICE grow / necha foizga oshdi / на сколько выросла цена" over a period: compare the weighted average
+      price SUM(amount_uzs)/SUM(volume) (per unit) of the FIRST and the LAST year of the period (one year asked -> first and last
+      month), never two single deals; return both averages with their years and change_pct; single first/last deals may be added
+      only as extra columns;
     - for a series (USD rate, price): also first and last value WITH their dates, MIN and MAX WITH the date each occurred (subqueries ORDER BY rate/price LIMIT 1), the average, and the % change first->last computed in SQL as ROUND((last - first) * 100.0 / first, 2) AS change_pct;
     - "total amount / turnover / summa / оборот" = SUM(amount_uzs) (all currencies converted to so'm), cancelled excluded; may add the USD part separately;
     - deal counts per year/month use COUNT(*) (all statuses) plus the cancelled count;

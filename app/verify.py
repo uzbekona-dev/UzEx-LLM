@@ -100,6 +100,18 @@ class Verification:
         return [str(v) for v in self.unsupported] + self.unsupported_strings
 
 
+# A year of the data period written AS A YEAR (2024-yil, 2022–2026, 2025 году, "в 2023") is wording about the data,
+# not a figure. A count written by our formatter has a thin-space group separator ("2 025") and is still checked.
+_DATA_YEAR_RE = re.compile(
+    r"(?<![\d.,])(?<!\d\s)\b202[2-6]\b(?![.,]\d)(?!\s?\d)"
+    r"(?!\s*(?:ta\b|та\b|tasi\b|таси\b|сделк|bitim|битим|so'm|сум|сўм|kg|кг|tonna|тонн))",
+    re.I)
+
+
+def strip_data_years(text: str) -> str:
+    return _DATA_YEAR_RE.sub(" ", text)
+
+
 def verify_answer(answer: str, rows: list[tuple], context: str) -> Verification:
     """`context` = question + SQL: numbers quoted from there (years, codes, INN) are fine."""
     allowed = _allowed_numbers(rows, context)
@@ -110,7 +122,7 @@ def verify_answer(answer: str, rows: list[tuple], context: str) -> Verification:
     else:
         scales = (1.0,)
     unsupported = []
-    for value in extract_numbers(answer):
+    for value in extract_numbers(strip_data_years(answer)):
         if value <= SMALL_INT_MAX and value.is_integer() and value <= len(rows):
             continue  # ordinals of a list / small counters bounded by the rows shown
         if not _matches(value, allowed, scales):
